@@ -354,6 +354,6 @@ La suite logique proposée est **R595 — contrat d’événement canonique et m
 | Logs bruts ajoutés au dépôt | Non |
 | Tests automatisés réellement exécutés | Non |
 | Conformité du ledger déclarée acquise | Non |
-| Contenu relu après création | À vérifier après commit |
+| Contenu relu après création | Vérifié sur GitHub après commit |
 
 **Conclusion :** R594 définit comment tester l’intégrité, la causalité, la durabilité et le replay sans transformer une spécification en résultat fictif. La priorité n’est pas de déclarer le système sûr, mais de rendre chaque revendication testable, chaque échec visible et chaque limite explicite.
