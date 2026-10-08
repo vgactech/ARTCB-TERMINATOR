@@ -1,4 +1,4 @@
-# R593 — Spécification normative de traçabilité atomique des exécutions ARTCB Guardian
+# R003 — Spécification normative de traçabilité atomique des exécutions ARTCB Guardian
 
 **Date :** 2026-10-09  
 **Dépôt de travail :** `vgactech/ARTCB-TERMINATOR`  
