@@ -1,4 +1,4 @@
-# R592 — Matrice de migration P0 ARTCB → Guardian Rust/Python
+# ROO2 — Matrice de migration P0 ARTCB → Guardian Rust/Python
 
 **Date :** 2026-10-09  
 **Dépôt de travail :** `vgactech/ARTCB-TERMINATOR`  
