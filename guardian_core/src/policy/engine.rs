@@ -270,4 +270,36 @@ mod tests {
         assert_eq!(info.reason, PolicyReason::ExfiltrationAttempt);
         assert_eq!(info.decision, PolicyDecision::Block);
     }
+
+    // ── F-013 — Donnée sensible dans une zone interdite ───────────────────────
+    // R006 §6 : BLOCK ou REDACT selon le profil de classification.
+    // classification_level >= 3 → REDACT (confidentiel)
+    // classification_level >= 3 + destination externe → BLOCK (exfiltration)
+    #[test]
+    fn test_f013_donnee_sensible_zone_interdite_redact() {
+        let engine = PolicyEngine::guardian_default();
+        // Niveau 3 (Confidential) sans destination externe → REDACT
+        let input = make_input(None, false, false, 3);
+        let result = engine.evaluate(&input);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Redact,
+            "F-013 : donnée confidentielle doit être redactée"
+        );
+        assert!(result.evidence_id.is_some(), "F-013 : REDACT doit produire un EvidenceId");
+    }
+
+    #[test]
+    fn test_f013_donnee_sensible_zone_interdite_block() {
+        let engine = PolicyEngine::guardian_default();
+        // Niveau 3 + destination externe → BLOCK (exfiltration prioritaire)
+        let input = make_input(None, true, false, 3);
+        let result = engine.evaluate(&input);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Block,
+            "F-013 : tentative d'exfiltration de donnée confidentielle → BLOCK"
+        );
+        assert!(result.evidence_id.is_some());
+    }
 }
