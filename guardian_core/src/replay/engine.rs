@@ -210,6 +210,80 @@ mod tests {
         }
     }
 
+    // ─── Tests R1 ─────────────────────────────────────────────────────────────
+
+    fn make_entry_with_policy(
+        seq: u64,
+        prev_hash: &str,
+        decision: crate::types::PolicyDecision,
+        evidence_id: Option<String>,
+    ) -> LedgerEntry {
+        use crate::event::ledger::PolicyInfo;
+        let mut entry = make_entry(seq, prev_hash);
+        entry.body.policy = Some(PolicyInfo {
+            policy_id: crate::types::PolicyId("policy:guardian-default".to_string()),
+            policy_version: "1.0.0".to_string(),
+            decision: decision.clone(),
+            reason: crate::types::PolicyReason::PolicyApplied,
+            evidence_id: evidence_id.clone(),
+        });
+        // Recalculer le hash avec le corps modifié
+        let canonical = canonicalize(&entry.body).unwrap();
+        let event_hash = compute_event_hash(&canonical);
+        let chain_hash = compute_chain_hash(prev_hash, &event_hash, seq).unwrap();
+        entry.event_hash = event_hash;
+        entry.chain_hash = chain_hash;
+        entry
+    }
+
+    #[test]
+    fn test_replay_r1_pass() {
+        // BLOCK avec evidence_id présent — cohérence vérifiée
+        use crate::types::PolicyDecision;
+        let e1 = make_entry_with_policy(
+            1,
+            GENESIS_HASH,
+            PolicyDecision::Block,
+            Some("01a00000-0000-7000-8000-000000000001".to_string()),
+        );
+        let entries = vec![e1];
+        let mut manifest = make_manifest(&entries);
+        manifest.requested_level = ReplayLevel::R1PolicyDecisions;
+        let report = ReplayEngine::replay_r1_policy(&entries, manifest).unwrap();
+        assert_eq!(report.result, VerificationResult::Pass);
+        assert_eq!(report.level_achieved, ReplayLevel::R1PolicyDecisions);
+        assert!(report.mismatches.is_empty(), "Pas de divergence attendue");
+    }
+
+    #[test]
+    fn test_replay_r1_fail_block_sans_evidence() {
+        // BLOCK sans evidence_id — incohérence détectée (invariant Guardian)
+        use crate::types::PolicyDecision;
+        let e1 = make_entry_with_policy(1, GENESIS_HASH, PolicyDecision::Block, None::<String>);
+        let entries = vec![e1];
+        let mut manifest = make_manifest(&entries);
+        manifest.requested_level = ReplayLevel::R1PolicyDecisions;
+        let report = ReplayEngine::replay_r1_policy(&entries, manifest).unwrap();
+        assert_eq!(report.result, VerificationResult::Fail);
+        assert!(!report.mismatches.is_empty(), "Divergence BLOCK sans evidence attendue");
+        assert_eq!(report.mismatches[0].field, "evidence_id");
+    }
+
+    #[test]
+    fn test_replay_r1_allow_sans_evidence_ok() {
+        // ALLOW sans evidence_id — normal, pas de divergence
+        use crate::types::PolicyDecision;
+        let e1 = make_entry_with_policy(1, GENESIS_HASH, PolicyDecision::Allow, None::<String>);
+        let entries = vec![e1];
+        let mut manifest = make_manifest(&entries);
+        manifest.requested_level = ReplayLevel::R1PolicyDecisions;
+        let report = ReplayEngine::replay_r1_policy(&entries, manifest).unwrap();
+        assert_eq!(report.result, VerificationResult::Pass);
+        assert!(report.mismatches.is_empty());
+    }
+
+    // ─── Tests R0 ─────────────────────────────────────────────────────────────
+
     #[test]
     fn test_replay_r0_pass() {
         let e1 = make_entry(1, GENESIS_HASH);
