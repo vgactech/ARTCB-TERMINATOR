@@ -16,4 +16,4 @@ classifiers = [
 # Feature "python" active PyO3
 features = ["python"]
 module-name = "artcb_guardian_core"
-python-source = "python"
+# python-source = "python"

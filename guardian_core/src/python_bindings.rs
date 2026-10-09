@@ -39,13 +39,14 @@
 mod python_bindings {
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
+    use pyo3::types::PyDict;
 
     use crate::event::ledger::{
         build_event, canonicalize, compute_event_hash, validate_event_body,
     };
     use crate::policy::engine::{PolicyEngine, PolicyInput};
     use crate::types::{
-        AgentId, DataClassification, EventId, OperationStatus, SessionId,
+        AgentId, DataClassification, EventId, OperationStatus, PolicyDecision, SessionId,
     };
 
     // ─── Helpers de conversion d'erreur ──────────────────────────────────────
@@ -81,7 +82,7 @@ mod python_bindings {
             1 => DataClassification::Public,
             2 => DataClassification::Internal,
             3 => DataClassification::Confidential,
-            4 => DataClassification::TopSecret,
+            4 => DataClassification::Secret,
             _ => return Err(PyValueError::new_err("classification invalide (0–4)")),
         };
         let body = build_event(
@@ -168,8 +169,14 @@ mod python_bindings {
         let engine = PolicyEngine::guardian_default();
         let result = engine.evaluate(&input);
 
-        let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("decision", result.decision.to_string())?;
+        let decision_str = match result.decision {
+            PolicyDecision::Allow => "ALLOW",
+            PolicyDecision::Block => "BLOCK",
+            PolicyDecision::Redact => "REDACT",
+            PolicyDecision::Escalate => "ESCALATE",
+        };
+        let dict = PyDict::new_bound(py);
+        dict.set_item("decision", decision_str)?;
         dict.set_item("reason", format!("{:?}", result.reason))?;
         dict.set_item(
             "evidence_id",
