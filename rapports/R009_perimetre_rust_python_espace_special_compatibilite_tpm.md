@@ -1,4 +1,4 @@
-# R009 — Périmètre retenu, frontière Rust/Python, espace SPECIal et exigences de compatibilité
+# R009 — Périmètre retenu, frontière Rust/Python, espace ARTCBTERMINATOR et exigences de compatibilité
 
 **Date :** 2026-10-09  
 **Dépôt de ce rapport :** `vgactech/ARTCB-TERMINATOR`  
