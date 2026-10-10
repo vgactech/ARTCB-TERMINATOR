@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import { useEffect, useState } from 'react'
 import {
   Activity,
   Bell,
@@ -16,6 +17,30 @@ const metrics = [
 ]
 
 function App() {
+  const [activeAgent, setActiveAgent] = useState(-1)
+  const [running, setRunning] = useState(false)
+  const blocked = activeAgent === 4
+
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => {
+      setActiveAgent((current) => {
+        if (current >= 3) {
+          window.clearInterval(timer)
+          setRunning(false)
+          return 4
+        }
+        return current + 1
+      })
+    }, 850)
+    return () => window.clearInterval(timer)
+  }, [running])
+
+  const runSimulation = () => {
+    setActiveAgent(0)
+    setRunning(true)
+  }
+
   return (
     <main className="min-h-screen bg-[#05080f] text-slate-100">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_70%_0%,rgba(16,185,129,0.09),transparent_35%)]" />
@@ -57,9 +82,11 @@ function App() {
           <motion.button
             whileHover={{ y: -2 }}
             whileTap={{ scale: 0.98 }}
-            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-300"
+            onClick={runSimulation}
+            disabled={running}
+            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-300 disabled:cursor-wait disabled:opacity-60"
           >
-            <Play size={18} fill="currentColor" /> Run attack simulation
+            <Play size={18} fill="currentColor" /> {running ? 'Simulation running…' : 'Run attack simulation'}
           </motion.button>
         </section>
 
@@ -91,7 +118,7 @@ function App() {
               </div>
               <Activity size={18} className="text-emerald-300" />
             </div>
-            <AgentFlow />
+            <AgentFlow activeAgent={activeAgent} running={running} />
             <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs">
               <span className="text-slate-500">Protected execution boundary</span>
               <span className="font-mono text-emerald-300">4 NODES · READY</span>
@@ -100,12 +127,22 @@ function App() {
 
           <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-6">
             <p className="text-sm font-semibold text-white">Latest operation</p>
-            <p className="mt-1 text-xs text-slate-500">Awaiting simulation</p>
+            <p className="mt-1 text-xs text-slate-500">{blocked ? 'Threat contained' : running ? 'Analyzing agent traffic' : 'Awaiting simulation'}</p>
             <div className="mt-6 grid min-h-72 place-items-center rounded-xl border border-dashed border-white/8 bg-white/[0.015] px-8 text-center">
-              <div>
-                <ShieldCheck className="mx-auto text-slate-700" size={32} />
-                <p className="mt-3 text-sm text-slate-500">Run the attack simulation to generate security evidence.</p>
-              </div>
+              {blocked ? (
+                <motion.div initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
+                  <div className="mx-auto flex size-16 items-center justify-center rounded-2xl border border-rose-400/25 bg-rose-400/10 text-rose-300">
+                    <ShieldCheck size={34} />
+                  </div>
+                  <p className="mt-4 font-mono text-xs font-bold tracking-[0.24em] text-rose-300">ACTION BLOCKED</p>
+                  <p className="mt-2 text-sm text-slate-400">Sensitive tool execution prevented by Guardian.</p>
+                </motion.div>
+              ) : (
+                <div>
+                  <ShieldCheck className={`mx-auto ${running ? 'animate-pulse text-emerald-400' : 'text-slate-700'}`} size={32} />
+                  <p className="mt-3 text-sm text-slate-500">{running ? 'Tracing the hostile payload across agents…' : 'Run the attack simulation to generate security evidence.'}</p>
+                </div>
+              )}
             </div>
           </article>
         </section>
