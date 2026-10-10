@@ -67,6 +67,9 @@ def test_policy_scenarios_use_guardian(
     assert all(event["hash_valid"] for event in result["events"])
     assert all(event["parent_valid"] for event in result["events"])
     assert bool(result["evidence_id"]) is (decision == "BLOCK")
+    assert result["tamper_verification"]["verdict"] == "FAIL"
+    assert len(result["tamper_verification"]["mismatches"]) == 1
+    assert result["tamper_verification"]["original_archive_unchanged"] is True
 
 
 def test_unknown_scenario_is_rejected() -> None:

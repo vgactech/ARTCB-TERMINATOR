@@ -163,6 +163,19 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
         })
         previous_hash = stored_hash
 
+    tampered_events = [dict(event) for event in serialized_events]
+    tampered_events[0]["event_hash"] = "0" * 64
+    tamper_mismatches = [
+        {
+            "event_id": event["event_id"],
+            "field": "event_hash",
+            "expected": stored[1],
+            "actual": event["event_hash"],
+        }
+        for event, stored in zip(tampered_events, events)
+        if event["event_hash"] != stored[1]
+    ]
+
     return {
         "scenario": {
             "id": scenario_id,
@@ -186,5 +199,15 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
             "verdict": "PASS" if chain_valid else "FAIL",
             "events_replayed": len(events),
             "mismatches": [] if chain_valid else ["Event hash or parent link mismatch"],
+        },
+        "tamper_verification": {
+            "level": "R0",
+            "verdict": "FAIL" if tamper_mismatches else "PASS",
+            "events_replayed": len(tampered_events),
+            "mismatches": tamper_mismatches,
+            "original_archive_unchanged": all(
+                event["event_hash"] == stored[1]
+                for event, stored in zip(serialized_events, events)
+            ),
         },
     }
