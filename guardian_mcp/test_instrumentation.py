@@ -659,3 +659,129 @@ def test_r030_002_invalid_first_line_load_verify_returns_fail(tmp_path):
     assert not result.is_pass()
     assert result.entries_verified == 0
 
+
+# ─── R032-A/B/C — Écart exécution/écriture, concurrence, rejeu ───────────────
+
+
+def test_r032_a_execution_status_executed_on_allow():
+    """R032-A : un appel ALLOW produit execution_status='EXECUTED'."""
+    instr = make_instr()
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    event, _ = instr.get_events()[-1]
+    assert event.execution_status == "EXECUTED"
+
+
+def test_r032_a_execution_status_not_executed_on_block():
+    """R032-A : un appel BLOCK produit execution_status='NOT_EXECUTED'."""
+    instr = make_instr()
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+    event, _ = instr.get_events()[-1]
+    assert event.execution_status == "NOT_EXECUTED"
+
+
+def test_r032_a_execution_status_failed_on_exception():
+    """R032-A : un appel ALLOW dont l'exécuteur lève une exception
+    produit execution_status='FAILED'."""
+    from guardian_mcp.instrumentation import GuardianDecision
+
+    instr = make_instr()
+
+    def failing_executor(p):
+        raise RuntimeError("tool crashed")
+
+    instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=failing_executor,
+    )
+    event, _ = instr.get_events()[-1]
+    assert event.execution_status == "FAILED"
+    assert event.decision == GuardianDecision.ALLOW
+
+
+def test_r032_a_execution_status_in_jsonl(tmp_path):
+    """R032-A : execution_status est persisté dans le fichier JSONL."""
+    import json as _json
+    from guardian_mcp.instrumentation import make_file_sink
+
+    ledger = tmp_path / "exec_status.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    assert lines[0]["execution_status"] == "EXECUTED"   # ALLOW
+    assert lines[1]["execution_status"] == "NOT_EXECUTED"  # BLOCK
+
+
+def test_r032_b_file_lock_prevents_interleaving(tmp_path):
+    """R032-B : le verrou fichier empêche l'entrelacement des écritures
+    depuis plusieurs threads (proxy pour multiprocessus sur même fichier)."""
+    import threading
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "concurrent.jsonl"
+    errors = []
+
+    def write_events(n: int) -> None:
+        sink = make_file_sink(ledger)
+        instr = make_instr(
+            event_sink=sink,
+            initial_seq=(n - 1) * 5,
+            initial_prev_hash=None,
+        )
+        for _ in range(5):
+            try:
+                instr.handle_tool_call(
+                    {"name": "blockchain.query", "arguments": {}},
+                    executor=ok_executor,
+                )
+            except Exception as e:
+                errors.append(e)
+
+    threads = [threading.Thread(target=write_events, args=(i,)) for i in range(1, 4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Erreurs pendant l'écriture concurrente : {errors}"
+
+    # Le fichier doit contenir exactement 15 lignes JSONL valides
+    lines = [l for l in ledger.read_text().splitlines() if l.strip()]
+    assert len(lines) == 15, f"15 lignes attendues, trouvées : {len(lines)}"
+    # Toutes les lignes doivent être du JSON valide
+    import json as _json
+    for i, line in enumerate(lines):
+        try:
+            _json.loads(line)
+        except Exception as e:
+            assert False, f"Ligne {i+1} JSON invalide (entrelacement) : {e}"
+
+
+def test_r032_c_is_replay_false_by_default():
+    """R032-C : is_replay est False par défaut pour tout événement réel."""
+    instr = make_instr()
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    event, _ = instr.get_events()[-1]
+    assert event.is_replay is False
+
+
+def test_r032_c_is_replay_in_canonical_dict():
+    """R032-C : is_replay est inclus dans le corps canonique — un événement
+    de replay a un hash différent de l'événement réel équivalent."""
+    import copy
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    event_real, hash_real = instr.get_events()[-1]
+
+    # Simuler un événement de replay identique mais avec is_replay=True
+    from dataclasses import replace as dc_replace
+    event_replay = dc_replace(event_real, is_replay=True)
+    hash_replay = event_replay.compute_hash()
+
+    assert hash_real != hash_replay, (
+        "Un événement de replay doit avoir un hash différent de l'événement réel"
+    )
+

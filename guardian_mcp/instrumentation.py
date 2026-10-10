@@ -78,6 +78,16 @@ class MCPToolEvent:
     output_summary: str       # résumé non sensible
     duration_ms: float
     previous_event_hash: str = GENESIS_HASH  # R023-002 : lien cryptographique au précédent
+    # R032-A : statut d'exécution explicite — distingue les cas EXECUTED/FAILED/NOT_EXECUTED.
+    # Valeurs : "EXECUTED" | "FAILED" | "NOT_EXECUTED" | "UNKNOWN"
+    # NOT_EXECUTED : l'outil n'a pas été appelé (BLOCK, ESCALATE).
+    # FAILED       : l'outil a été appelé mais a levé une exception.
+    # EXECUTED     : l'outil a été appelé et a retourné un résultat.
+    # UNKNOWN      : état indéterminé (ex: crash entre exécution et journalisation).
+    execution_status: str = "NOT_EXECUTED"
+    # R032-C : marqueur de rejeu — True si cet événement est produit lors d'un replay.
+    # Un événement de replay ne doit pas déclencher d'action externe.
+    is_replay: bool = False
     schema_id: str = SCHEMA_ID
     schema_version: str = SCHEMA_VERSION
 
@@ -95,7 +105,9 @@ class MCPToolEvent:
             "duration_ms": self.duration_ms,
             "event_id": self.event_id,
             "event_type": self.event_type,
+            "execution_status": self.execution_status,
             "input_hash": self.input_hash,
+            "is_replay": self.is_replay,
             "occurred_at": self.occurred_at,
             "output_summary": self.output_summary,
             "previous_event_hash": self.previous_event_hash,
@@ -251,16 +263,19 @@ class GuardianMCPInstrumentation:
         t0 = time.monotonic()
         result: dict[str, Any] | None = None
         output_summary = ""
+        execution_status = "NOT_EXECUTED"  # R032-A : valeur par défaut
 
         if decision == GuardianDecision.ALLOW:
             try:
                 result = executor(params)
                 output_summary = _summarize_output(result)
+                execution_status = "EXECUTED"
             except Exception as exc:  # noqa: BLE001
                 # R026-001 : ne pas exposer str(exc) — peut contenir des données sensibles.
                 # Seul le type d'exception est journalisé ; la réponse externe est générique.
                 logger.error("Erreur outil %s : type=%s", tool_name, type(exc).__name__)
                 output_summary = f"ERROR:{type(exc).__name__}"
+                execution_status = "FAILED"
                 result = {
                     "isError": True,
                     "content": [{"type": "text", "text": f"[GUARDIAN] Tool execution error (ref: {tool_name})"}],
@@ -272,6 +287,7 @@ class GuardianMCPInstrumentation:
                 raw = executor(params)
                 result = _redact_output(raw)
                 output_summary = "REDACTED"
+                execution_status = "EXECUTED"
             except Exception as exc:  # noqa: BLE001
                 # R026-001 : même protection que ALLOW — pas de str(exc) exposé.
                 logger.error("Erreur outil %s (REDACT) : type=%s", tool_name, type(exc).__name__)
@@ -280,6 +296,7 @@ class GuardianMCPInstrumentation:
                     "content": [{"type": "text", "text": "[REDACTED]"}],
                 }
                 output_summary = "REDACTED_ERROR"
+                execution_status = "FAILED"
 
         elif decision == GuardianDecision.BLOCK:
             result = {
@@ -287,6 +304,7 @@ class GuardianMCPInstrumentation:
                 "content": [{"type": "text", "text": f"[GUARDIAN] Tool call blocked: {reason}"}],
             }
             output_summary = f"BLOCKED:{reason}"
+            # execution_status reste "NOT_EXECUTED" — l'outil n'a pas été appelé
 
         elif decision == GuardianDecision.ESCALATE:
             result = {
@@ -296,6 +314,7 @@ class GuardianMCPInstrumentation:
                 ],
             }
             output_summary = f"ESCALATED:{reason}"
+            # execution_status reste "NOT_EXECUTED"
 
         duration_ms = (time.monotonic() - t0) * 1000
 
@@ -317,6 +336,7 @@ class GuardianMCPInstrumentation:
             output_summary=output_summary,
             duration_ms=round(duration_ms, 3),
             previous_event_hash=prev_hash,
+            execution_status=execution_status,
         )
         event_hash = event.compute_hash()
         # Toujours alimenter _events (pour prev_hash et introspection),
@@ -431,29 +451,38 @@ def make_file_sink(path: str | Path) -> Callable[[MCPToolEvent, str], None]:
 
     def sink(event: MCPToolEvent, event_hash: str) -> None:
         record = {
-            "event_id": event.event_id,
-            "event_type": event.event_type,
-            "occurred_at": event.occurred_at,
-            "tool_name": event.tool_name,
             "agent_id": event.agent_id,
-            "session_id": event.session_id,
-            "run_id": event.run_id,
-            "sequence_no": event.sequence_no,
             "decision": event.decision.value,
             "decision_reason": event.decision_reason,
-            "input_hash": event.input_hash,
-            "output_summary": event.output_summary,
             "duration_ms": event.duration_ms,
+            "event_hash": event_hash,
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "execution_status": event.execution_status,   # R032-A
+            "input_hash": event.input_hash,
+            "is_replay": event.is_replay,                 # R032-C
+            "occurred_at": event.occurred_at,
+            "output_summary": event.output_summary,
             "previous_event_hash": event.previous_event_hash,
+            "run_id": event.run_id,
             "schema_id": event.schema_id,
             "schema_version": event.schema_version,
-            "event_hash": event_hash,
+            "sequence_no": event.sequence_no,
+            "session_id": event.session_id,
+            "tool_name": event.tool_name,
         }
         line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+        # R032-B : verrou fichier exclusif pour garantir l'atomicité des écritures
+        # entre plusieurs processus partageant le même journal.
+        import fcntl
         with open(jsonl_path, "a", encoding="utf-8") as f:
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     return sink
 
@@ -552,14 +581,15 @@ def load_and_verify_jsonl(
         event_id = record.get("event_id", f"<ligne {i+1}>")
 
         # 1. Recalculer le hash de l'événement depuis ses champs canoniques
+        # R032-A/C : execution_status et is_replay sont désormais dans le corps canonique
         canonical_fields = {
             k: record[k]
             for k in (
                 "agent_id", "decision", "decision_reason", "duration_ms",
-                "event_id", "event_type", "input_hash", "occurred_at",
-                "output_summary", "previous_event_hash", "run_id",
-                "schema_id", "schema_version", "sequence_no",
-                "session_id", "tool_name",
+                "event_id", "event_type", "execution_status", "input_hash",
+                "is_replay", "occurred_at", "output_summary",
+                "previous_event_hash", "run_id", "schema_id", "schema_version",
+                "sequence_no", "session_id", "tool_name",
             )
             if k in record
         }
