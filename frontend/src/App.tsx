@@ -102,16 +102,13 @@ function App() {
           <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
             <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
           </motion.button>
+          {apiError && <p role="alert" className="mt-3 text-sm text-rose-300">{apiError}</p>}
         </section>
 
         <section className="mt-8">
           <article className="rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
             <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div>{result && <button type="button" onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10"><Activity size={15} aria-hidden="true" /> View execution graph</button>}</div>
             <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
-            <div className="mt-5 flex flex-col gap-2 rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs sm:flex-row sm:items-center sm:justify-between">
-              {apiError ? <span role="alert" className="text-rose-300">{apiError}</span> : <span className="text-slate-400">{completed ? <><strong className="font-semibold text-white">{result.decision}</strong> · {result.reason}</> : running ? 'Guardian is evaluating the request…' : 'Run a scenario to see the decision.'}</span>}
-              {completed && <span className="font-mono text-emerald-300">{result.tool_name} · {result.execution_status.replace('_', ' ')}</span>}
-            </div>
           </article>
         </section>
 

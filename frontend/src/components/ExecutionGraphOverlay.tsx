@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { Background, MarkerType, Position, ReactFlow } from '@xyflow/react'
 import type { Edge, Node } from '@xyflow/react'
 import { Network, X } from 'lucide-react'
@@ -54,31 +55,6 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
       type: 'smoothstep',
     }))
 
-    graphNodes.push({
-        id: 'decision',
-        position: { x: 1070, y: 180 },
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-        data: {
-          label: (
-            <div className="text-center">
-              <p className="font-mono text-[9px] font-bold tracking-wider text-slate-500">GUARDIAN DECISION</p>
-              <p className={`mt-2 text-xl font-bold ${result.decision === 'ALLOW' ? 'text-emerald-300' : result.decision === 'ESCALATE' ? 'text-amber-300' : 'text-rose-300'}`}>{result.decision}</p>
-            </div>
-          ),
-        },
-        className: `guardian-graph-node guardian-graph-decision ${activeAgent >= 4 ? `guardian-decision-${result.decision.toLowerCase()}` : 'guardian-graph-pending'}`,
-      })
-    graphEdges.push({
-        id: 'edge-decision',
-        source: result.agents[3].id,
-        target: 'decision',
-        animated: true,
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
-        style: { stroke: '#34d399', strokeWidth: 2, opacity: activeAgent >= 4 ? 1 : 0 },
-        type: 'smoothstep',
-      })
-
     return { nodes: graphNodes, edges: graphEdges }
   }, [activeAgent, result])
 
@@ -98,6 +74,21 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
           <ReactFlow key={result?.run_id ?? 'waiting'} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2, minZoom: 0.55, maxZoom: 1 }} minZoom={0.4} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}>
             <Background color="#1e293b" gap={24} size={1} />
           </ReactFlow>
+          <AnimatePresence>
+            {activeAgent >= 4 && result && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.7, y: 18 }}
+                animate={{ opacity: [0, 1, 1, 0], scale: [0.7, 1, 1, 0.9], y: [18, 0, 0, -12] }}
+                transition={{ duration: 1.8, times: [0, 0.14, 0.78, 1], ease: 'easeOut' }}
+                className={`pointer-events-none absolute inset-x-0 bottom-8 mx-auto w-fit rounded-2xl border px-8 py-4 text-center shadow-2xl backdrop-blur-xl ${result.decision === 'ALLOW' ? 'border-emerald-300/60 bg-emerald-500/90 text-white shadow-emerald-950/50' : result.decision === 'ESCALATE' ? 'border-amber-300/60 bg-amber-500/90 text-slate-950 shadow-amber-950/50' : result.decision === 'REDACT' ? 'border-violet-300/60 bg-violet-500/90 text-white shadow-violet-950/50' : 'border-rose-300/60 bg-rose-600/90 text-white shadow-rose-950/50'}`}
+                role="status"
+                aria-live="assertive"
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.22em]">Guardian decision</p>
+                <p className="mt-1 text-2xl font-black tracking-wide">{result.decision === 'BLOCK' ? 'BLOCKED' : result.decision === 'ESCALATE' ? 'ESCALATED' : result.decision === 'ALLOW' ? 'ALLOWED' : 'REDACTED'}</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </section>
     </div>
