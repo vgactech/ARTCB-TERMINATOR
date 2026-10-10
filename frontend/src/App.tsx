@@ -12,6 +12,8 @@ import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
 import { ReplayResults } from './components/ReplayResults'
 import { SecurityResults } from './components/SecurityResults'
+import { checkGuardianHealth, runGuardianSimulation } from './api/guardian'
+import type { SimulationReport } from './api/guardian'
 
 const metrics = [
   { label: 'System status', value: 'Protected', detail: 'All controls active', iconClass: 'text-emerald-300' },
@@ -22,8 +24,16 @@ const metrics = [
 function App() {
   const [activeAgent, setActiveAgent] = useState(-1)
   const [running, setRunning] = useState(false)
-  const [identifiers, setIdentifiers] = useState({ evidence: '', session: '', run: '' })
-  const blocked = activeAgent === 4
+  const [report, setReport] = useState<SimulationReport | null>(null)
+  const [apiError, setApiError] = useState('')
+  const [engineState, setEngineState] = useState<'checking' | 'online' | 'offline'>('checking')
+  const blocked = activeAgent === 4 && report?.blocking?.decision === 'BLOCK'
+
+  useEffect(() => {
+    checkGuardianHealth()
+      .then(() => setEngineState('online'))
+      .catch(() => setEngineState('offline'))
+  }, [])
 
   useEffect(() => {
     if (!running) return
@@ -40,14 +50,21 @@ function App() {
     return () => window.clearInterval(timer)
   }, [running])
 
-  const runSimulation = () => {
-    setIdentifiers({
-      evidence: `evidence:${crypto.randomUUID()}`,
-      session: `session:${crypto.randomUUID()}`,
-      run: `run:${crypto.randomUUID()}`,
-    })
+  const runSimulation = async () => {
+    setReport(null)
+    setApiError('')
     setActiveAgent(0)
     setRunning(true)
+    try {
+      const nextReport = await runGuardianSimulation()
+      setReport(nextReport)
+      setEngineState('online')
+    } catch (error) {
+      setRunning(false)
+      setActiveAgent(-1)
+      setEngineState('offline')
+      setApiError(error instanceof Error ? error.message : 'Guardian simulation failed.')
+    }
   }
 
   return (
@@ -67,8 +84,8 @@ function App() {
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/7 px-3 py-1.5 text-xs text-emerald-300 sm:flex">
-              <span className="size-1.5 animate-pulse rounded-full bg-emerald-300" />
-              Engine online
+              <span className={`size-1.5 rounded-full ${engineState === 'online' ? 'animate-pulse bg-emerald-300' : engineState === 'offline' ? 'bg-rose-400' : 'animate-pulse bg-amber-300'}`} />
+              {engineState === 'online' ? 'Engine online' : engineState === 'offline' ? 'Engine offline' : 'Checking engine'}
             </span>
             <button type="button" className="rounded-xl border border-white/8 p-2.5 text-slate-400 transition hover:border-white/15 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300" aria-label="Notifications">
               <Bell size={18} />
@@ -101,7 +118,7 @@ function App() {
             <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Simulation running…' : 'Run attack simulation'}
           </motion.button>
           <span id="simulation-status" className="sr-only" aria-live="polite">
-            {blocked ? 'Simulation complete. Hostile action blocked.' : running ? `Simulation running. Processing agent ${activeAgent + 1} of 4.` : 'Simulation ready.'}
+            {apiError || (blocked ? 'Simulation complete. Hostile action blocked.' : running ? `Simulation running. Processing agent ${activeAgent + 1} of 4.` : 'Simulation ready.')}
           </span>
         </section>
 
@@ -144,7 +161,15 @@ function App() {
             <p className="text-sm font-semibold text-white">Latest operation</p>
             <p className="mt-1 text-xs text-slate-500">{blocked ? 'Threat contained' : running ? 'Analyzing agent traffic' : 'Awaiting simulation'}</p>
             <div className="mt-6 grid min-h-72 place-items-center rounded-xl border border-dashed border-white/8 bg-white/[0.015] px-8 text-center">
-              {blocked ? (
+              {apiError ? (
+                <div role="alert">
+                  <div className="mx-auto flex size-16 items-center justify-center rounded-2xl border border-rose-400/25 bg-rose-400/10 text-rose-300">
+                    <ShieldCheck size={34} aria-hidden="true" />
+                  </div>
+                  <p className="mt-4 font-mono text-xs font-bold tracking-[0.2em] text-rose-300">BACKEND OFFLINE</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{apiError}</p>
+                </div>
+              ) : blocked ? (
                 <motion.div initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
                   <div className="mx-auto flex size-16 items-center justify-center rounded-2xl border border-rose-400/25 bg-rose-400/10 text-rose-300">
                     <ShieldCheck size={34} />
@@ -162,12 +187,12 @@ function App() {
           </article>
         </section>
 
-        {blocked && (
+        {blocked && report && (
           <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
             <SecurityResults
-              evidenceId={identifiers.evidence}
-              sessionId={identifiers.session}
-              runId={identifiers.run}
+              evidenceId={report.blocking?.evidence_id ?? ''}
+              sessionId={report.session_id}
+              runId={report.run_id}
             />
             <EventTimeline />
             <ReplayResults />
