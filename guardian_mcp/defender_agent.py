@@ -173,19 +173,21 @@ class DefenderAgent:
     # ------------------------------------------------------------------
 
     def verify_chain_r0(self) -> ReplayResult:
-        """Replay R0 — vérifie les hashes individuels et la monotonie des séquences.
+        """Replay R0 — vérifie les hashes individuels, la monotonie des séquences
+        et le chaînage parent-hash en mémoire.
 
-        R021-002 : deux contrôles effectués :
+        Trois contrôles effectués (R021-002, R023-002) :
         1. Recalcul du hash SHA-256 de chaque événement et comparaison au hash stocké.
         2. Vérification que sequence_no augmente strictement (1, 2, 3, …).
+        3. Vérification que previous_event_hash de chaque événement correspond
+           au event_hash de l'événement précédent dans la liste.
 
-        Ces contrôles détectent la modification du contenu d'un événement
-        et un réordonnancement si les sequence_no ne sont pas recalculés avec lui.
-        Ils ne vérifient pas de lien parent-hash entre événements successifs
-        (R023-002 — non implémenté) : un réordonnancement d'événements non altérés
-        ne serait pas détecté par les hashes individuels.
-        Voir R021-005 pour la persistance durable et R023-002 pour le parent-hash.
+        Limite : ces contrôles s'exécutent en mémoire sur la session courante.
+        Pour la persistance durable après redémarrage, utiliser
+        make_file_sink() + load_and_verify_jsonl() (R021-005).
         """
+        from guardian_mcp.instrumentation import GENESIS_HASH
+
         events = self._instrumentation.get_events()
         mismatches = []
 
@@ -212,6 +214,18 @@ class DefenderAgent:
                 })
             prev_seq = event.sequence_no
 
+        # Vérification 3 : chaînage parent-hash (R023-002)
+        prev_hash = GENESIS_HASH
+        for event, stored_hash in events:
+            if event.previous_event_hash != prev_hash:
+                mismatches.append({
+                    "event_id": event.event_id,
+                    "field": "previous_event_hash",
+                    "original": prev_hash[:16] + "…",
+                    "replayed": event.previous_event_hash[:16] + "…",
+                })
+            prev_hash = stored_hash
+
         verdict = "PASS" if not mismatches else "FAIL"
         return ReplayResult(
             level="R0",
@@ -219,9 +233,11 @@ class DefenderAgent:
             events_replayed=len(events),
             mismatches=mismatches,
             limits=[
-                "R0 vérifie les hashes individuels et la monotonie des séquences en mémoire",
+                "R0 vérifie les hashes individuels, la monotonie des séquences et le chaînage parent-hash en mémoire",
                 "R0 ne vérifie pas une chaîne persistante résistante à la suppression",
-                "Un replay R0 réussi ne prouve pas la persistance durable",
+                "Un replay R0 réussi ne prouve pas la persistance durable (voir R021-005)",
+                "Limite : troncature de fin non détectable sans point d'ancrage externe",
+                "séquence",
             ],
         )
 

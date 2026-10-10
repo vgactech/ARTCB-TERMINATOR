@@ -307,3 +307,121 @@ def test_r026_block_executor_never_receives_arguments():
         "L'exécuteur ne doit jamais être appelé pour un outil BLOCK"
     )
 
+
+# ─── R021-005 / R023-002 — Persistance durable et chaînage parent-hash ────────
+
+
+def test_r021_005_file_sink_persist_and_reload(tmp_path):
+    """R021-005 : les événements écrits via FileSink sont relisibles après
+    'redémarrage' (nouvelle instance, même fichier)."""
+    from guardian_mcp.instrumentation import (
+        ChainVerificationResult, load_and_verify_jsonl, make_file_sink,
+    )
+
+    ledger = tmp_path / "guardian_test.jsonl"
+    sink = make_file_sink(ledger)
+
+    # Session 1 — écriture de 3 événements
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    assert ledger.exists(), "Le fichier JSONL doit exister après écriture"
+
+    # Vérifier que le fichier contient 3 lignes non vides
+    lines = [l for l in ledger.read_text().splitlines() if l.strip()]
+    assert len(lines) == 3, f"3 événements attendus dans le JSONL, trouvés : {len(lines)}"
+
+    # Session 2 — rechargement et vérification (simule un redémarrage)
+    result = load_and_verify_jsonl(ledger)
+    assert result.is_pass(), f"Vérification après rechargement doit passer : {result.mismatches}"
+    assert result.entries_verified == 3
+    assert any("R021-005" in l for l in result.limits)
+    assert any("R023-002" in l for l in result.limits)
+
+
+def test_r021_005_file_not_found_returns_fail(tmp_path):
+    """R021-005 : un fichier inexistant retourne FAIL, pas une exception."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl
+    result = load_and_verify_jsonl(tmp_path / "inexistant.jsonl")
+    assert not result.is_pass()
+    assert any("introuvable" in m.get("error", "") for m in result.mismatches)
+
+
+def test_r023_002_parent_hash_chained(tmp_path):
+    """R023-002 : chaque événement référence cryptographiquement le précédent."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        GENESIS_HASH, load_and_verify_jsonl, make_file_sink,
+    )
+
+    ledger = tmp_path / "chain_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    assert len(lines) == 3
+
+    # Vérifier le chaînage explicite
+    assert lines[0]["previous_event_hash"] == GENESIS_HASH, \
+        "Premier événement doit pointer vers GENESIS_HASH"
+    assert lines[1]["previous_event_hash"] == lines[0]["event_hash"], \
+        "Deuxième événement doit pointer vers le hash du premier"
+    assert lines[2]["previous_event_hash"] == lines[1]["event_hash"], \
+        "Troisième événement doit pointer vers le hash du deuxième"
+
+    # Vérification complète via load_and_verify_jsonl
+    result = load_and_verify_jsonl(ledger)
+    assert result.is_pass(), f"Chaîne doit être valide : {result.mismatches}"
+
+
+def test_r023_002_tampered_parent_hash_fails(tmp_path):
+    """R023-002 : une altération du parent-hash est détectée au rechargement."""
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "tamper_chain.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Lire les lignes, corrompre le previous_event_hash de la 2e entrée
+    lines = ledger.read_text().splitlines()
+    record2 = _json.loads(lines[1])
+    record2["previous_event_hash"] = "a" * 64   # hash invalide
+    lines[1] = _json.dumps(record2, separators=(",", ":"), sort_keys=True)
+    ledger.write_text("\n".join(lines) + "\n")
+
+    result = load_and_verify_jsonl(ledger)
+    assert not result.is_pass(), "L'altération du parent-hash doit être détectée"
+    assert any(m["field"] == "previous_event_hash" for m in result.mismatches)
+
+
+def test_r023_002_reordering_detected(tmp_path):
+    """R023-002 : un réordonnancement des lignes dans le JSONL est détecté."""
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "reorder_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Inverser l'ordre des lignes 1 et 2
+    lines = ledger.read_text().splitlines()
+    lines[0], lines[1] = lines[1], lines[0]
+    ledger.write_text("\n".join(lines) + "\n")
+
+    result = load_and_verify_jsonl(ledger)
+    assert not result.is_pass(), "Le réordonnancement doit être détecté"
+

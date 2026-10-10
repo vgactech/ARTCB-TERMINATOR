@@ -27,10 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger("artcb.guardian.mcp")
@@ -41,6 +43,8 @@ COMPONENT_VERSION = "1.0.0"
 SCHEMA_ID = "https://artcb.example/schemas/guardian/event/1.0.0"
 SCHEMA_VERSION = "1.0.0"
 DOMAIN_PREFIX = b"ARTCB-GUARDIAN-EVENT-V1"
+CHAIN_DOMAIN_PREFIX = b"ARTCB-GUARDIAN-CHAIN-V1"
+GENESIS_HASH = "0" * 64
 
 # ─── Décisions de politique ───────────────────────────────────────────────────
 
@@ -73,11 +77,17 @@ class MCPToolEvent:
     input_hash: str           # SHA-256 des params (hex) — pas les params bruts
     output_summary: str       # résumé non sensible
     duration_ms: float
+    previous_event_hash: str = GENESIS_HASH  # R023-002 : lien cryptographique au précédent
     schema_id: str = SCHEMA_ID
     schema_version: str = SCHEMA_VERSION
 
     def to_canonical_dict(self) -> dict[str, Any]:
-        """Corps canonique JCS-compatible (clés triées récursivement)."""
+        """Corps canonique JCS-compatible (clés triées récursivement).
+
+        Le champ previous_event_hash est inclus dans le corps canonique (R023-002) :
+        tout changement d'ordre ou suppression d'un événement modifie le hash
+        de l'événement suivant dans la chaîne.
+        """
         return {
             "agent_id": self.agent_id,
             "decision": self.decision.value,
@@ -88,6 +98,7 @@ class MCPToolEvent:
             "input_hash": self.input_hash,
             "occurred_at": self.occurred_at,
             "output_summary": self.output_summary,
+            "previous_event_hash": self.previous_event_hash,
             "run_id": self.run_id,
             "schema_id": self.schema_id,
             "schema_version": self.schema_version,
@@ -97,7 +108,11 @@ class MCPToolEvent:
         }
 
     def compute_hash(self) -> str:
-        """SHA-256 avec préfixe domaine Guardian (R005 §5)."""
+        """SHA-256 avec préfixe domaine Guardian (R005 §5).
+
+        Le previous_event_hash est inclus dans le corps canonique,
+        ce qui chaîne cryptographiquement chaque événement à son prédécesseur.
+        """
         canonical = json.dumps(
             self.to_canonical_dict(), separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
@@ -271,8 +286,9 @@ class GuardianMCPInstrumentation:
 
         duration_ms = (time.monotonic() - t0) * 1000
 
-        # Produire l'événement
+        # Produire l'événement — R023-002 : inclure le hash du précédent
         self._seq += 1
+        prev_hash = self._events[-1][1] if self._events else GENESIS_HASH
         event = MCPToolEvent(
             event_id=str(uuid.uuid4()),
             event_type="mcp.tool.call",
@@ -287,8 +303,12 @@ class GuardianMCPInstrumentation:
             input_hash=_sha256_hex(json.dumps(arguments, sort_keys=True).encode()),
             output_summary=output_summary,
             duration_ms=round(duration_ms, 3),
+            previous_event_hash=prev_hash,
         )
         event_hash = event.compute_hash()
+        # Toujours alimenter _events (pour prev_hash et introspection),
+        # même quand un sink externe est utilisé.
+        self._events.append((event, event_hash))
         self._event_sink(event, event_hash)
 
         # Enrichir la réponse MCP avec l'event_id Guardian
@@ -322,7 +342,8 @@ class GuardianMCPInstrumentation:
     # ------------------------------------------------------------------
 
     def _default_sink(self, event: MCPToolEvent, event_hash: str) -> None:
-        self._events.append((event, event_hash))
+        # _events est déjà alimenté dans handle_tool_call avant l'appel au sink.
+        # Ce sink se charge uniquement de la journalisation.
         logger.info(
             "GuardianMCP [%s] tool=%s decision=%s hash=%s…",
             event.event_id[:8],
@@ -371,3 +392,178 @@ def _redact_output(result: Any) -> dict[str, Any]:
         else:
             redacted_content.append(item)
     return {**result, "content": redacted_content}
+
+
+# ─── Persistance durable (R021-005) ──────────────────────────────────────────
+
+
+def make_file_sink(path: str | Path) -> Callable[[MCPToolEvent, str], None]:
+    """Retourne un sink qui persiste chaque événement en JSONL avec fsync.
+
+    Chaque ligne est un objet JSON contenant :
+    - tous les champs de MCPToolEvent (decision comme valeur string)
+    - le event_hash calculé
+    - previous_event_hash (R023-002)
+
+    Le fichier peut être rechargé et vérifié via load_and_verify_jsonl().
+
+    R021-005 : la durabilité est garantie par os.fsync() après chaque écriture.
+    """
+    jsonl_path = Path(path)
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def sink(event: MCPToolEvent, event_hash: str) -> None:
+        record = {
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "occurred_at": event.occurred_at,
+            "tool_name": event.tool_name,
+            "agent_id": event.agent_id,
+            "session_id": event.session_id,
+            "run_id": event.run_id,
+            "sequence_no": event.sequence_no,
+            "decision": event.decision.value,
+            "decision_reason": event.decision_reason,
+            "input_hash": event.input_hash,
+            "output_summary": event.output_summary,
+            "duration_ms": event.duration_ms,
+            "previous_event_hash": event.previous_event_hash,
+            "schema_id": event.schema_id,
+            "schema_version": event.schema_version,
+            "event_hash": event_hash,
+        }
+        line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
+
+    return sink
+
+
+@dataclass
+class ChainVerificationResult:
+    """Résultat de la vérification d'un fichier JSONL Guardian."""
+    entries_verified: int
+    verdict: str           # "PASS" ou "FAIL"
+    mismatches: list[dict]
+    limits: list[str]
+
+    def is_pass(self) -> bool:
+        return self.verdict == "PASS"
+
+
+def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
+    """Charge et vérifie un fichier JSONL Guardian après redémarrage.
+
+    R021-005 : démontre la persistance — les événements sont relus depuis le disque.
+    R023-002 : vérifie le chaînage parent-hash entre chaque événement.
+
+    Vérifications effectuées :
+    1. Recalcul du event_hash de chaque événement (intégrité individuelle).
+    2. Vérification que previous_event_hash de chaque entrée correspond
+       au event_hash de l'entrée précédente (chaînage cryptographique).
+    3. Vérification de la monotonie des sequence_no.
+
+    Limites :
+    - Ne vérifie pas la troncature de fin (dernier hash attendu inconnu
+      sans point d'ancrage externe).
+    - Ne recrée pas les objets MCPToolEvent complets — utilise les champs
+      bruts du JSON pour recalculer le hash.
+    """
+    jsonl_path = Path(path)
+    if not jsonl_path.exists():
+        return ChainVerificationResult(
+            entries_verified=0,
+            verdict="FAIL",
+            mismatches=[{"error": f"Fichier introuvable : {path}"}],
+            limits=[],
+        )
+
+    entries = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                return ChainVerificationResult(
+                    entries_verified=len(entries),
+                    verdict="FAIL",
+                    mismatches=[{"error": f"JSON invalide ligne {lineno} : {type(e).__name__}"}],
+                    limits=[],
+                )
+
+    mismatches: list[dict] = []
+    prev_hash = GENESIS_HASH
+    prev_seq = 0
+
+    for i, record in enumerate(entries):
+        event_id = record.get("event_id", f"<ligne {i+1}>")
+
+        # 1. Recalculer le hash de l'événement depuis ses champs canoniques
+        canonical_fields = {
+            k: record[k]
+            for k in (
+                "agent_id", "decision", "decision_reason", "duration_ms",
+                "event_id", "event_type", "input_hash", "occurred_at",
+                "output_summary", "previous_event_hash", "run_id",
+                "schema_id", "schema_version", "sequence_no",
+                "session_id", "tool_name",
+            )
+            if k in record
+        }
+        canonical_bytes = json.dumps(
+            canonical_fields, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        h = hashlib.sha256()
+        h.update(DOMAIN_PREFIX)
+        h.update(b"\x00")
+        h.update(canonical_bytes)
+        recomputed_hash = h.hexdigest()
+
+        stored_hash = record.get("event_hash", "")
+        if recomputed_hash != stored_hash:
+            mismatches.append({
+                "event_id": event_id,
+                "field": "event_hash",
+                "stored": stored_hash[:16] + "…",
+                "recomputed": recomputed_hash[:16] + "…",
+            })
+
+        # 2. Vérifier le chaînage parent-hash (R023-002)
+        stored_prev = record.get("previous_event_hash", "")
+        if stored_prev != prev_hash:
+            mismatches.append({
+                "event_id": event_id,
+                "field": "previous_event_hash",
+                "expected": prev_hash[:16] + "…",
+                "stored": stored_prev[:16] + "…",
+            })
+
+        # 3. Vérifier la monotonie des séquences
+        seq = record.get("sequence_no", 0)
+        if seq <= prev_seq:
+            mismatches.append({
+                "event_id": event_id,
+                "field": "sequence_no",
+                "expected": f">{prev_seq}",
+                "stored": str(seq),
+            })
+
+        prev_hash = stored_hash  # avancer avec le hash stocké pour suivre la chaîne
+        prev_seq = seq
+
+    verdict = "PASS" if not mismatches else "FAIL"
+    return ChainVerificationResult(
+        entries_verified=len(entries),
+        verdict=verdict,
+        mismatches=mismatches,
+        limits=[
+            "R021-005 : persistance JSONL avec fsync — durabilité démontrée après rechargement",
+            "R023-002 : chaînage previous_event_hash vérifié entre événements successifs",
+            "Limite : troncature de fin non détectable sans point d'ancrage externe du dernier hash attendu",
+        ],
+    )
