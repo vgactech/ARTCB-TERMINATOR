@@ -104,11 +104,7 @@ function App() {
           </motion.button>
         </section>
 
-        <section className="mt-8 grid gap-4 md:grid-cols-3">
-          {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p></motion.article>)}
-        </section>
-
-        <section className="mt-6">
+        <section className="mt-8">
           <article className="rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
             <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div>{result && <button type="button" onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10"><Activity size={15} aria-hidden="true" /> View execution graph</button>}</div>
             <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
@@ -117,6 +113,10 @@ function App() {
               {completed && <span className="font-mono text-emerald-300">{result.tool_name} · {result.execution_status.replace('_', ' ')}</span>}
             </div>
           </article>
+        </section>
+
+        <section className="mt-6 grid gap-4 md:grid-cols-3">
+          {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p></motion.article>)}
         </section>
 
         <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">ARTCB TERMINATOR · Guardian Security Console</footer>
