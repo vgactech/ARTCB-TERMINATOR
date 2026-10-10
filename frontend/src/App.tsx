@@ -65,9 +65,9 @@ function App() {
   }
 
   const metrics = [
-    { label: 'System status', value: engineState === 'online' ? 'Protected' : engineState === 'offline' ? 'Offline' : 'Checking', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
-    { label: 'Agents participating', value: result ? `${result.distinct_agent_count} / 4` : 'Ready', iconClass: 'text-cyan-300' },
-    { label: 'Evidence chain', value: result?.chain_verification.verdict ?? 'Ready', iconClass: 'text-violet-300' },
+    { label: 'Backend', value: engineState === 'online' ? 'Online' : engineState === 'offline' ? 'Offline' : 'Checking', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
+    { label: 'Agents verified', value: result ? `${result.distinct_agent_count} of 4` : 'Waiting', iconClass: 'text-cyan-300' },
+    { label: 'Audit trail', value: result ? (result.chain_verification.verdict === 'PASS' ? 'Valid' : 'Invalid') : 'Waiting', iconClass: 'text-violet-300' },
   ]
 
   return (
