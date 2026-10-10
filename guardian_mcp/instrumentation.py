@@ -583,15 +583,33 @@ def make_file_sink(path: str | Path) -> Callable[[MCPToolEvent, str], None]:
         line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
         # R032-B : verrou fichier exclusif pour garantir l'atomicité des écritures
         # entre plusieurs processus partageant le même journal.
-        import fcntl
-        with open(jsonl_path, "a", encoding="utf-8") as f:
-            try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                f.write(line)
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        with open(jsonl_path, "a+", encoding="utf-8") as f:
+            if os.name == "nt":
+                import msvcrt
+
+                # Windows locks a byte range from the current position. Locking
+                # the first byte serializes appenders even when the journal is
+                # still empty; the payload itself remains append-only.
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    f.seek(0, os.SEEK_END)
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())
+                finally:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     return sink
 
