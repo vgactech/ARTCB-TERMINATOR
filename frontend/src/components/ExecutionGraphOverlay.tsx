@@ -28,59 +28,56 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
       }
     }
 
-    const visibleAgents = result.agents.filter((agent) => agent.index <= activeAgent)
-    const graphNodes: Node[] = visibleAgents.map((agent) => ({
+    const graphNodes: Node[] = result.agents.map((agent) => ({
       id: agent.id,
-      position: { x: 30 + agent.index * 235, y: 180 },
+      position: { x: 30 + agent.index * 260, y: 180 },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       data: {
         label: (
           <div className="text-left">
-            <p className="font-mono text-[9px] font-bold tracking-wider text-cyan-300">STEP {agent.index + 1} · {agent.status}</p>
-            <p className="mt-2 text-sm font-semibold text-white">{roleLabels[agent.role]}</p>
+            <p className="font-mono text-[10px] font-bold tracking-wider text-cyan-300">STEP {agent.index + 1} · {agent.status}</p>
+            <p className="mt-2 text-base font-semibold text-white">{roleLabels[agent.role]}</p>
           </div>
         ),
       },
-      className: `guardian-graph-node ${agent.index === activeAgent ? 'guardian-graph-active' : 'guardian-graph-complete'}`,
+      className: `guardian-graph-node ${agent.index > activeAgent ? 'guardian-graph-pending' : agent.index === activeAgent ? 'guardian-graph-active' : 'guardian-graph-complete'}`,
     }))
 
-    const graphEdges: Edge[] = visibleAgents.slice(1).map((agent, index) => ({
+    const graphEdges: Edge[] = result.agents.slice(1).map((agent, index) => ({
       id: `edge-${index}-${index + 1}`,
-      source: visibleAgents[index].id,
+      source: result.agents[index].id,
       target: agent.id,
       animated: agent.index === activeAgent,
       markerEnd: { type: MarkerType.ArrowClosed, color: '#22d3ee' },
-      style: { stroke: '#22d3ee', strokeWidth: 2 },
+      style: { stroke: '#22d3ee', strokeWidth: 2, opacity: agent.index <= activeAgent ? 1 : 0 },
       type: 'smoothstep',
     }))
 
-    if (activeAgent >= 4) {
-      graphNodes.push({
+    graphNodes.push({
         id: 'decision',
-        position: { x: 970, y: 180 },
+        position: { x: 1070, y: 180 },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         data: {
           label: (
             <div className="text-center">
               <p className="font-mono text-[9px] font-bold tracking-wider text-slate-500">GUARDIAN DECISION</p>
-              <p className={`mt-2 text-lg font-bold ${result.decision === 'ALLOW' ? 'text-emerald-300' : result.decision === 'ESCALATE' ? 'text-amber-300' : 'text-rose-300'}`}>{result.decision}</p>
+              <p className={`mt-2 text-xl font-bold ${result.decision === 'ALLOW' ? 'text-emerald-300' : result.decision === 'ESCALATE' ? 'text-amber-300' : 'text-rose-300'}`}>{result.decision}</p>
             </div>
           ),
         },
-        className: `guardian-graph-node guardian-graph-decision guardian-decision-${result.decision.toLowerCase()}`,
+        className: `guardian-graph-node guardian-graph-decision ${activeAgent >= 4 ? `guardian-decision-${result.decision.toLowerCase()}` : 'guardian-graph-pending'}`,
       })
-      graphEdges.push({
+    graphEdges.push({
         id: 'edge-decision',
         source: result.agents[3].id,
         target: 'decision',
         animated: true,
         markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
-        style: { stroke: '#34d399', strokeWidth: 2 },
+        style: { stroke: '#34d399', strokeWidth: 2, opacity: activeAgent >= 4 ? 1 : 0 },
         type: 'smoothstep',
       })
-    }
 
     return { nodes: graphNodes, edges: graphEdges }
   }, [activeAgent, result])
@@ -98,7 +95,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
           <button type="button" onClick={onClose} className="rounded-lg border border-white/8 p-2 text-slate-400 transition hover:bg-white/5 hover:text-white" aria-label="Close execution graph"><X size={18} /></button>
         </header>
         <div className="relative min-h-0 flex-1">
-          <ReactFlow key={`${nodes.length}-${activeAgent}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.28, minZoom: 0.55, maxZoom: 1 }} minZoom={0.4} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}>
+          <ReactFlow key={result?.run_id ?? 'waiting'} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2, minZoom: 0.55, maxZoom: 1 }} minZoom={0.4} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}>
             <Background color="#1e293b" gap={24} size={1} />
           </ReactFlow>
         </div>
