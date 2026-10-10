@@ -11,13 +11,13 @@
 
 ## 1. Executive decision
 
-**Recommendation: proceed with a branch-isolated integration experiment, but do not merge it into `main) without explicit owner approval.**
+**Recommendation: proceed with a branch-isolated integration experiment, but do not merge it into `main` without explicit owner approval.**
 
 The objective is to let ARTCB-TERMINATOR exercise externally provided ARTCB capabilities through stable API/MCP interfaces, while keeping the external implementation independently maintained and out of the TERMINATOR source tree. The integration must be optional, versioned, observable, and disableable. It must not silently replace existing Guardian behavior or become a mandatory runtime dependency until parity, failure handling, security, and competition-demo readiness are demonstrated.
 
 This branch currently contains this report only. The repository-level project instruction limits this audit work to writing reports under `rapports/`; therefore this report does not implement application code, modify tests, change deployment settings, add secrets, or alter the external ARTCB repository. The branch is a decision and implementation specification, not proof that integration is already active.
 
-**Merge policy:** no merge, rebase into `main), or release promotion is authorized by this report. A separate, explicit approval is required after the acceptance gates in Section 13 pass.
+**Merge policy:** no merge, rebase into `main`, or release promotion is authorized by this report. A separate, explicit approval is required after the acceptance gates in Section 13 pass.
 
 ## 2. Expertise activated
 
