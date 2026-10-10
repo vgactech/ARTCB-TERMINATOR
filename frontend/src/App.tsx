@@ -88,9 +88,6 @@ function App() {
             <div className="mb-3 flex items-center gap-2 font-mono text-xs font-semibold tracking-[0.2em] text-emerald-300 uppercase"><Radar size={15} /> Live defense environment</div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance text-white md:text-5xl">Security operations overview</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Run security requests through four distinct backend agents and inspect Guardian's policy evidence.</p>
-            <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
-              <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
-            </motion.button>
           </div>
           <span id="simulation-status" className="sr-only" aria-live="polite">{apiError || (completed ? `Guardian returned ${result.decision}.` : running ? `Processing agent ${activeAgent + 1} of 4.` : 'Simulation ready.')}</span>
         </section>
@@ -107,6 +104,9 @@ function App() {
               </button>
             ))}
           </div>
+          <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
+            <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
+          </motion.button>
         </section>
 
         <section className="mt-8 grid gap-4 md:grid-cols-3">
