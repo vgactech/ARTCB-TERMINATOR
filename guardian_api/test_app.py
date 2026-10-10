@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from guardian_api.app import app
@@ -30,3 +31,44 @@ def test_run_simulation() -> None:
     assert report["replay_r1_intact"]["verdict"] == "PASS"
     assert report["replay_r0_tampered"]["verdict"] == "FAIL"
     assert len(report["steps"]) == 9
+
+
+def test_lists_four_distinct_scenarios() -> None:
+    response = client.get("/api/scenarios")
+    assert response.status_code == 200
+    scenarios = response.json()
+    assert {scenario["id"] for scenario in scenarios} == {
+        "safe-read",
+        "prompt-injection",
+        "sensitive-exfiltration",
+        "human-approval",
+    }
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "decision", "executed"),
+    [
+        ("safe-read", "ALLOW", True),
+        ("prompt-injection", "BLOCK", False),
+        ("sensitive-exfiltration", "BLOCK", False),
+        ("human-approval", "ESCALATE", False),
+    ],
+)
+def test_policy_scenarios_use_guardian(
+    scenario_id: str, decision: str, executed: bool
+) -> None:
+    response = client.post(f"/api/scenarios/{scenario_id}/run")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["decision"] == decision
+    assert result["tool_was_executed"] is executed
+    assert result["chain_verification"]["verdict"] == "PASS"
+    assert len(result["events"]) == 2
+    assert all(event["hash_valid"] for event in result["events"])
+    assert all(event["parent_valid"] for event in result["events"])
+    assert bool(result["evidence_id"]) is (decision == "BLOCK")
+
+
+def test_unknown_scenario_is_rejected() -> None:
+    response = client.post("/api/scenarios/not-real/run")
+    assert response.status_code == 404
