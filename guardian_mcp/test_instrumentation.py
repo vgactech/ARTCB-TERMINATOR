@@ -626,3 +626,36 @@ def test_r030_002_recover_state_accepts_valid_journal(tmp_path):
     assert len(last_hash) == 64
     assert last_hash != "0" * 64
 
+
+# ─── R030-002 corr. — Faille résiduelle ordre FAIL/count ─────────────────────
+
+
+def test_r030_002_invalid_first_line_raises_not_silent(tmp_path):
+    """R030-002 corr. : un journal non vide dont la première ligne est du JSON
+    invalide doit lever ValueError, pas retourner silencieusement (0, GENESIS_HASH).
+
+    Ce scénario était le défaut résiduel identifié dans le contre-audit R030 :
+    load_and_verify_jsonl retournait entries_verified=0 avec verdict=FAIL,
+    et l'ancienne vérification `if entries_verified == 0` court-circuitait le verdict.
+    """
+    import pytest as _pytest
+    from guardian_mcp.instrumentation import recover_state_from_jsonl
+
+    ledger = tmp_path / "bad_first_line.jsonl"
+    ledger.write_text("NOT_JSON\n")
+
+    with _pytest.raises(ValueError, match="R030-002"):
+        recover_state_from_jsonl(ledger)
+
+
+def test_r030_002_invalid_first_line_load_verify_returns_fail(tmp_path):
+    """Complément : load_and_verify_jsonl retourne FAIL sur JSON invalide."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl
+
+    ledger = tmp_path / "bad_json.jsonl"
+    ledger.write_text("NOT_JSON\n")
+
+    result = load_and_verify_jsonl(ledger)
+    assert not result.is_pass()
+    assert result.entries_verified == 0
+

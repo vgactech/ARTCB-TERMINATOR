@@ -649,14 +649,17 @@ def recover_state_from_jsonl(path: str | Path) -> tuple[int, str]:
         return 0, GENESIS_HASH
 
     # Vérification complète avant d'extraire l'état
+    # R030-002 corr. : vérifier le verdict EN PREMIER, avant le count.
+    # Un FAIL avec entries_verified==0 (ex: première ligne illisible) doit lever ValueError,
+    # pas être silencieusement traité comme un journal vide légitime.
     result = load_and_verify_jsonl(jsonl_path)
-    if result.entries_verified == 0:
-        return 0, GENESIS_HASH
     if not result.is_pass():
         raise ValueError(
             f"Reprise refusée : le journal '{path}' contient {len(result.mismatches)} "
             f"incohérence(s) — R030-002. Vérifiez avec load_and_verify_jsonl() avant de reprendre."
         )
+    if result.entries_verified == 0:
+        return 0, GENESIS_HASH
 
     # Journal valide — récupérer le dernier état depuis les lignes brutes
     last_seq = 0
