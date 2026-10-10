@@ -70,6 +70,20 @@ def test_policy_scenarios_use_guardian(
     assert result["tamper_verification"]["verdict"] == "FAIL"
     assert len(result["tamper_verification"]["mismatches"]) == 1
     assert result["tamper_verification"]["original_archive_unchanged"] is True
+    assert result["distinct_agent_count"] == 4
+    assert [agent["role"] for agent in result["agents"]] == [
+        "orchestrator",
+        "source",
+        "propagator",
+        "defender",
+    ]
+    assert len({agent["id"] for agent in result["agents"]}) == 4
+    assert all(agent["status"] == "COMPLETED" for agent in result["agents"])
+    assert result["request"]["request_id"] == result["propagation"]["payload_id"]
+    assert result["request"]["content_hash"] == result["propagation"]["payload_content_hash"]
+    assert result["propagation"]["from_agent"] == result["agents"][1]["id"]
+    assert result["propagation"]["via_agent"] == result["agents"][2]["id"]
+    assert result["propagation"]["to_agent"] == result["agents"][3]["id"]
 
 
 def test_unknown_scenario_is_rejected() -> None:

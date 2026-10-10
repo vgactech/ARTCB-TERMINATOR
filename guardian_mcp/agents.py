@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from guardian_mcp.attacker_agent import InjectionPayload
+from guardian_mcp.attacker_agent import AgentRequest, InjectionPayload
 from guardian_mcp.instrumentation import GuardianMCPInstrumentation
 
 
@@ -174,6 +174,44 @@ class PropagatorAgent:
             propagation_id=f"prop:{uuid.uuid4()}",
             payload_id=injection.payload_id,
             payload_content_hash=injection.content_hash,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            via_agent=self.AGENT_ID,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            sequence_no=self._seq,
+        )
+        self._records.append(record)
+        return record
+
+    def relay_request(
+        self,
+        request: AgentRequest,
+        *,
+        from_agent: str,
+        to_agent: str,
+    ) -> PropagationRecord:
+        """Relay any typed scenario request while preserving its causal hash."""
+        self._seq += 1
+        self._instrumentation.handle_tool_call(
+            params={
+                "name": "message.relay",
+                "arguments": {
+                    "request_id": request.request_id,
+                    "content_hash": request.content_hash,
+                    "from_agent": from_agent,
+                    "to_agent": to_agent,
+                },
+            },
+            executor=lambda _params: {
+                "isError": False,
+                "content": [{"type": "text", "text": "relayed"}],
+            },
+        )
+        record = PropagationRecord(
+            propagation_id=f"prop:{uuid.uuid4()}",
+            payload_id=request.request_id,
+            payload_content_hash=request.content_hash,
             from_agent=from_agent,
             to_agent=to_agent,
             via_agent=self.AGENT_ID,

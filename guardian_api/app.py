@@ -5,13 +5,15 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
-import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from guardian_mcp.demo_scenario import DemoReport, run_demo_scenario
-from guardian_mcp.instrumentation import GENESIS_HASH, GuardianMCPInstrumentation
+from guardian_mcp.agents import OrchestratorAgent, PropagatorAgent
+from guardian_mcp.attacker_agent import AttackerAgent
+from guardian_mcp.defender_agent import DefenderAgent
+from guardian_mcp.instrumentation import GENESIS_HASH
 
 
 app = FastAPI(
@@ -119,34 +121,35 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
     if scenario is None:
         raise HTTPException(status_code=404, detail="Unknown Guardian scenario.")
 
-    session_id = f"session:{uuid.uuid4()}"
-    run_id = f"run:{uuid.uuid4()}"
-    executor_calls = 0
-
-    def inert_executor(_params: dict[str, Any]) -> dict[str, Any]:
-        nonlocal executor_calls
-        executor_calls += 1
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": "inert demo result"}],
-        }
-
-    guardian = GuardianMCPInstrumentation(
-        agent_id="agent:defender-d",
-        session_id=session_id,
-        run_id=run_id,
+    orchestrator = OrchestratorAgent()
+    source = AttackerAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
     )
-    result = guardian.handle_tool_call(
-        {"name": scenario["tool_name"], "arguments": scenario["arguments"]},
-        executor=inert_executor,
+    propagator = PropagatorAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
     )
-    events = guardian.get_all_events()
-    terminal = events[-1][0]
-    evidence_id = (
-        f"evidence:{uuid.uuid4()}"
-        if result["_guardian_decision"] == "BLOCK"
-        else None
+    defender = DefenderAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
     )
+    context = orchestrator.open_session(
+        attacker_id=source.AGENT_ID,
+        propagator_id=propagator.AGENT_ID,
+        defender_id=defender.AGENT_ID_DEFENDER,
+    )
+    request = source.craft_agent_request(
+        tool_name=scenario["tool_name"],
+        arguments=scenario["arguments"],
+    )
+    propagation = propagator.relay_request(
+        request,
+        from_agent=source.AGENT_ID,
+        to_agent=defender.AGENT_ID_DEFENDER,
+    )
+    result = defender.evaluate_request(request)
+    events = defender.get_all_events()
 
     previous_hash = GENESIS_HASH
     chain_valid = True
@@ -183,16 +186,30 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
             "description": scenario["description"],
             "risk": scenario["risk"],
         },
-        "session_id": session_id,
-        "run_id": run_id,
-        "decision": result["_guardian_decision"],
-        "reason": terminal.decision_reason,
-        "tool_name": terminal.tool_name,
-        "execution_status": terminal.execution_status,
-        "tool_was_executed": executor_calls > 0,
-        "evidence_id": evidence_id,
-        "guardian_event_id": result["_guardian_event_id"],
-        "intent_id": result["_guardian_intent_id"],
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "decision": result.decision.value,
+        "reason": result.reason,
+        "tool_name": result.tool_name,
+        "execution_status": result.execution_status,
+        "tool_was_executed": result.tool_was_executed,
+        "evidence_id": result.evidence_id or None,
+        "guardian_event_id": result.guardian_event_id,
+        "intent_id": result.intent_id,
+        "request": _to_json_value(request),
+        "propagation": _to_json_value(propagation),
+        "agents": [
+            {"index": 0, "id": context.orchestrator_id, "role": "orchestrator", "status": "COMPLETED", "artifact_id": context.session_id, "events": len(orchestrator.get_events())},
+            {"index": 1, "id": context.attacker_id, "role": "source", "status": "COMPLETED", "artifact_id": request.request_id, "events": 0},
+            {"index": 2, "id": context.propagator_id, "role": "propagator", "status": "COMPLETED", "artifact_id": propagation.propagation_id, "events": len(propagator.get_events())},
+            {"index": 3, "id": context.defender_id, "role": "defender", "status": "COMPLETED", "artifact_id": result.guardian_event_id, "events": len(defender.get_terminal_events())},
+        ],
+        "distinct_agent_count": len({
+            context.orchestrator_id,
+            context.attacker_id,
+            context.propagator_id,
+            context.defender_id,
+        }),
         "events": serialized_events,
         "chain_verification": {
             "level": "R0",

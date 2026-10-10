@@ -72,6 +72,22 @@ class ExfiltrationCall:
         return {"name": self.tool_name, "arguments": self.arguments}
 
 
+@dataclass
+class AgentRequest:
+    """Typed tool request created by Agent B for four-agent orchestration."""
+
+    request_id: str
+    tool_name: str
+    arguments: dict
+    content_hash: str
+    agent_source: str
+    session_id: str
+    run_id: str
+
+    def to_mcp_params(self) -> dict:
+        return {"name": self.tool_name, "arguments": self.arguments}
+
+
 # ─── Agent attaquant ─────────────────────────────────────────────────────────
 
 
@@ -150,6 +166,24 @@ class AttackerAgent:
     def craft_normal_call(self, tool_name: str = "memory.read") -> dict:
         """Construit un appel d'outil normal (pour le test ALLOW D4-01)."""
         return {"name": tool_name, "arguments": {"key": "demo_context"}}
+
+    def craft_agent_request(self, tool_name: str, arguments: dict) -> AgentRequest:
+        """Create a traceable inert request for the selectable scenario pipeline."""
+        self._payload_counter += 1
+        canonical = json.dumps(
+            {"arguments": arguments, "tool_name": tool_name},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return AgentRequest(
+            request_id=f"request:{uuid.uuid4()}",
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            content_hash=_sha256_hex(canonical),
+            agent_source=self.AGENT_ID,
+            session_id=self.session_id,
+            run_id=self.run_id,
+        )
 
 
 # ─── Utilitaires ─────────────────────────────────────────────────────────────

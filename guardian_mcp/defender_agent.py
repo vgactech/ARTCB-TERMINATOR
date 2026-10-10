@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from guardian_mcp.attacker_agent import ExfiltrationCall
+from guardian_mcp.attacker_agent import AgentRequest, ExfiltrationCall
 from guardian_mcp.instrumentation import (
     GuardianDecision,
     GuardianMCPInstrumentation,
@@ -56,6 +56,20 @@ class BlockingResult:
             and bool(self.evidence_id)
             and not self.tool_was_executed
         )
+
+
+@dataclass
+class PolicyResult:
+    """Decision returned by Agent D for a generic orchestrated request."""
+
+    decision: GuardianDecision
+    evidence_id: str
+    guardian_event_id: str
+    intent_id: str
+    tool_name: str
+    reason: str
+    execution_status: str
+    tool_was_executed: bool
 
 
 # ─── Résultat de replay ────────────────────────────────────────────────────────
@@ -166,6 +180,30 @@ class DefenderAgent:
                 "isError": False,
                 "content": [{"type": "text", "text": "demo_value"}],
             },
+        )
+
+    def evaluate_request(self, request: AgentRequest) -> PolicyResult:
+        """Evaluate the exact request relayed by Agent C through Guardian."""
+        before = self._executor_call_count
+        result = self._instrumentation.handle_tool_call(
+            params=request.to_mcp_params(),
+            executor=self._dangerous_executor,
+        )
+        terminal, _ = self._instrumentation.get_events()[-1]
+        decision = GuardianDecision(result["_guardian_decision"])
+        evidence_id = ""
+        if decision == GuardianDecision.BLOCK:
+            evidence_id = f"evidence:{uuid.uuid4()}"
+            self._evidence_registry[evidence_id] = result["_guardian_event_id"]
+        return PolicyResult(
+            decision=decision,
+            evidence_id=evidence_id,
+            guardian_event_id=result["_guardian_event_id"],
+            intent_id=result["_guardian_intent_id"],
+            tool_name=request.tool_name,
+            reason=terminal.decision_reason,
+            execution_status=terminal.execution_status,
+            tool_was_executed=self._executor_call_count > before,
         )
 
     # ------------------------------------------------------------------
