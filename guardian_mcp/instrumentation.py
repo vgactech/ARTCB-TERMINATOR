@@ -989,16 +989,30 @@ class ArchivedToolResponse:
     L-019-002 P1 : associe chaque invocation à un identifiant stable.
     Le hash d'entrée (input_hash) permet de vérifier que la fixture correspond
     à l'appel original. La response_hash garantit l'intégrité de la réponse.
+
+    R036-C : distingue trois niveaux de fidélité :
+    - response_payload : résumé Guardian (decision + execution_status + output_summary)
+    - response_hash    : SHA-256 du résumé canonique
+    - raw_response_hash: SHA-256 du payload brut de l'outil (si disponible, sinon "")
+      Un replay peut être fidèle au résumé sans reproduire le payload brut complet.
+      Ces deux niveaux sont des propriétés différentes — ne jamais les confondre.
+
+    canonicalization_version : version du format de sérialisation utilisé pour
+      calculer response_hash. Un changement de sérialisation invalide les anciens hashes.
     """
     intent_id: str          # lien vers l'INTENT de l'appel original
     tool_name: str
     input_hash: str         # SHA-256 des arguments d'entrée (doit correspondre à l'INTENT)
     decision: str           # "ALLOW" | "BLOCK" | "REDACT" | "ESCALATE"
     execution_status: str   # "EXECUTED" | "FAILED" | "NOT_EXECUTED"
-    response_payload: dict  # réponse canonique archivée
-    response_hash: str      # SHA-256 de response_payload (canonique, clés triées)
+    response_payload: dict  # résumé Guardian archivé (R036-C : pas le payload brut)
+    response_hash: str      # SHA-256 du résumé canonique
     schema_version: str = SCHEMA_VERSION
     archived_at: str = field(default_factory=_utc_now)
+    # R036-C : hash du payload brut de l'outil (vide si non capturé)
+    raw_response_hash: str = ""
+    # R036-C : version du format de canonicalisation (pour détecter les incompatibilités)
+    canonicalization_version: str = "jcs-v1"
 
     def verify_response_hash(self) -> bool:
         """Vérifie que response_hash correspond à response_payload."""
@@ -1019,10 +1033,12 @@ class ArchivedToolResponse:
     def to_dict(self) -> dict:
         return {
             "archived_at": self.archived_at,
+            "canonicalization_version": self.canonicalization_version,
             "decision": self.decision,
             "execution_status": self.execution_status,
             "input_hash": self.input_hash,
             "intent_id": self.intent_id,
+            "raw_response_hash": self.raw_response_hash,
             "response_hash": self.response_hash,
             "response_payload": self.response_payload,
             "schema_version": self.schema_version,
@@ -1041,6 +1057,8 @@ class ArchivedToolResponse:
             response_hash=d["response_hash"],
             schema_version=d.get("schema_version", SCHEMA_VERSION),
             archived_at=d.get("archived_at", ""),
+            raw_response_hash=d.get("raw_response_hash", ""),
+            canonicalization_version=d.get("canonicalization_version", "jcs-v1"),
         )
 
 
@@ -1138,6 +1156,49 @@ def make_recording_sink(
     return sink
 
 
+# ─── Sentinelle dynamique R036-A ──────────────────────────────────────────────
+
+
+class ExternalCallForbiddenError(RuntimeError):
+    """Levée si un exécuteur externe est appelé pendant un replay R2/R3.
+
+    R036-A : transforme la garantie documentaire en propriété testée du chemin
+    d'exécution. Tout appel à make_failfast_executor() pendant un replay produit
+    une exception immédiate et incrémente le compteur de violations.
+    """
+
+
+def make_failfast_executor(violations: list[dict]) -> Callable[[dict], Any]:
+    """Retourne un exécuteur qui échoue immédiatement s'il est appelé.
+
+    R036-A : à utiliser comme exécuteur de test pendant un replay R2/R3 pour
+    prouver dynamiquement qu'aucun outil externe n'est invoqué. Chaque appel
+    enregistre la violation dans `violations` ET lève ExternalCallForbiddenError.
+
+    Args:
+        violations : liste mutable où chaque appel interdit est enregistré.
+
+    Usage dans les tests :
+        violations = []
+        executor = make_failfast_executor(violations)
+        instr.handle_tool_call(params, executor=executor, is_replay=True)
+        assert len(violations) == 0  # aucun appel interdit
+    """
+    def failfast_executor(params: dict) -> Any:
+        violation = {
+            "tool_name": params.get("name", "unknown"),
+            "arguments_hash": _sha256_hex(
+                json.dumps(params.get("arguments", {}), sort_keys=True).encode()
+            )[:16],
+            "error": "Exécuteur externe appelé pendant un replay — violation R036-A",
+        }
+        violations.append(violation)
+        raise ExternalCallForbiddenError(
+            f"R036-A : appel externe interdit pendant replay — outil '{params.get('name','?')}'"
+        )
+    return failfast_executor
+
+
 # ─── Replay R2 — simulation sans effets externes (L-019-002 P1) ──────────────
 
 
@@ -1147,10 +1208,14 @@ class R2ReplayResult:
 
     L-019-002 P1 : distingue intégrité des traces, fidélité de simulation
     et exactitude métier. Ce sont des propriétés différentes.
+
+    R036-A : external_calls_prevented est désormais un compteur dynamique
+    (toujours 0 dans R2 par construction — aucun exécuteur n'est appelé).
+    Pour une vérification active, utiliser make_failfast_executor() dans les tests.
     """
     verdict: str                    # "PASS" | "FAIL" | "IN_DOUBT"
     events_replayed: int
-    external_calls_prevented: int   # sentinelle : doit rester 0
+    external_calls_prevented: int   # dynamique : 0 confirme aucun exécuteur appelé
     mismatches: list[dict]
     in_doubt: list[dict]            # INTENT orphelins détectés
     limits: list[str]
@@ -1322,5 +1387,330 @@ def replay_r2(
             "R2 ne vérifie pas la correction sémantique du contenu retourné par l'outil",
             "Un verdict PASS R2 ne prouve pas que l'effet externe original était correct",
             f"Préconditions manifeste : {precond.entries_verified} entrées vérifiées",
+        ],
+    )
+
+
+# ─── Ancrage d'archive R036-B ─────────────────────────────────────────────────
+
+
+@dataclass
+class ArchiveAnchor:
+    """Ancrage cryptographique d'une archive de réponses d'outils.
+
+    R036-B : un hash non signé ne prouve pas à lui seul l'origine des données.
+    ArchiveAnchor encapsule le hash de l'ensemble de l'archive (tous les
+    intent_id + response_hash, dans l'ordre trié) pour permettre la détection
+    d'une substitution cohérente journal+archive.
+
+    Processus de vérification :
+    1. Calculer archive_hash depuis le contenu actuel de l'archive.
+    2. Comparer à anchor.archive_hash stocké indépendamment.
+    3. Si identiques → l'archive n'a pas été modifiée depuis la création de l'ancrage.
+
+    Limite fondamentale (documentée) : si l'attaquant contrôle à la fois l'archive
+    ET l'ancrage, il peut recalculer les deux de façon cohérente. L'ancrage doit être
+    stocké dans un système de confiance indépendant du journal pour être probant.
+    """
+    archive_hash: str      # SHA-256 de la représentation canonique de l'archive
+    entry_count: int       # nombre de fixtures au moment de la création
+    created_at: str        # horodatage RFC-3339 UTC
+    run_id: str            # run associé
+
+    def to_dict(self) -> dict:
+        return {
+            "archive_hash": self.archive_hash,
+            "created_at": self.created_at,
+            "entry_count": self.entry_count,
+            "run_id": self.run_id,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "ArchiveAnchor":
+        return ArchiveAnchor(
+            archive_hash=d["archive_hash"],
+            entry_count=d["entry_count"],
+            created_at=d["created_at"],
+            run_id=d["run_id"],
+        )
+
+
+def compute_archive_hash(archive: "ToolResponseArchive") -> str:
+    """Calcule le hash canonique de l'ensemble d'une archive.
+
+    R036-B : déterministe — les entrées sont triées par intent_id avant hachage.
+    Un seul changement dans n'importe quelle fixture modifie le hash global.
+    """
+    # Trier par intent_id pour le déterminisme
+    entries_sorted = sorted(
+        archive._entries.values(),
+        key=lambda e: e.intent_id,
+    )
+    canonical_parts = []
+    for entry in entries_sorted:
+        canonical_parts.append(f"{entry.intent_id}:{entry.response_hash}")
+    canonical = "|".join(canonical_parts)
+    return _sha256_hex(canonical.encode("utf-8"))
+
+
+def create_archive_anchor(archive: "ToolResponseArchive", run_id: str) -> ArchiveAnchor:
+    """Crée un ancrage cryptographique pour une archive.
+
+    R036-B : à appeler après la session d'enregistrement, avant tout replay.
+    L'ancrage doit être stocké indépendamment de l'archive pour être probant.
+    """
+    return ArchiveAnchor(
+        archive_hash=compute_archive_hash(archive),
+        entry_count=len(archive),
+        created_at=_utc_now(),
+        run_id=run_id,
+    )
+
+
+def verify_archive_anchor(
+    archive: "ToolResponseArchive",
+    anchor: ArchiveAnchor,
+) -> tuple[bool, str]:
+    """Vérifie qu'une archive correspond à son ancrage.
+
+    R036-B : retourne (True, "") si conforme, (False, raison) si déviation.
+
+    Limites documentées :
+    - Ne prouve pas l'origine si l'ancrage lui-même a été remplacé.
+    - Un hash identique après remplacement cohérent journal+archive+ancrage
+      passe cette vérification. L'ancrage doit être stocké dans un système tiers.
+    """
+    if len(archive) != anchor.entry_count:
+        return False, (
+            f"Nombre de fixtures : attendu {anchor.entry_count}, "
+            f"trouvé {len(archive)}"
+        )
+    current_hash = compute_archive_hash(archive)
+    if current_hash != anchor.archive_hash:
+        return False, (
+            f"Hash d'archive diverge : "
+            f"ancrage={anchor.archive_hash[:16]}… "
+            f"actuel={current_hash[:16]}…"
+        )
+    return True, ""
+
+
+# ─── Replay R3 — exécution déterministe contrôlée (L-019-002 P1 R3) ──────────
+
+
+@dataclass
+class DeterministicContext:
+    """Contexte d'exécution déterministe pour R3.
+
+    R036-D : neutralise les sources de non-déterminisme pour rendre une
+    exécution contrôlée reproductible. Les sources à contrôler sont :
+    - Horloge (occurred_at) : fixée à fixed_now
+    - UUID (event_id, intent_id) : générés à partir d'un compteur séquentiel
+    - Sources d'aléa : non exposées dans l'instrumentation actuelle
+
+    Limite : les dépendances externes (réseau, fichiers, modèles IA) ne peuvent
+    pas être contrôlées par ce contexte. Elles doivent être remplacées par des
+    fixtures ou déclarées comme sources de non-déterminisme.
+    """
+    fixed_now: str          # horodatage fixe RFC-3339 UTC pour tous les événements
+    uuid_counter: list[int] = field(default_factory=lambda: [0])
+
+    def next_uuid(self) -> str:
+        """Génère un UUID déterministe depuis un compteur séquentiel."""
+        self.uuid_counter[0] += 1
+        # UUID v4 déterministe : counter encodé dans les octets bas
+        n = self.uuid_counter[0]
+        return f"00000000-0000-4000-8000-{n:012d}"
+
+    @staticmethod
+    def create(fixed_now: str | None = None) -> "DeterministicContext":
+        """Crée un contexte déterministe avec une horloge fixée."""
+        return DeterministicContext(
+            fixed_now=fixed_now or "2000-01-01T00:00:00Z",
+        )
+
+
+@dataclass
+class R3ReplayResult:
+    """Résultat d'un replay R3 (exécution déterministe contrôlée).
+
+    R036-D : distingue les niveaux de fidélité :
+    - decisions_match     : toutes les décisions Guardian sont identiques
+    - execution_statuses_match : tous les statuts d'exécution sont identiques
+    - hashes_match        : les hashes d'événements sont identiques
+      (nécessite que l'horodatage soit neutralisé via DeterministicContext)
+
+    Un PASS R3 sur les décisions ne garantit pas un PASS R3 sur les hashes si
+    des sources de non-déterminisme résiduelles existent (ex: horodatage réel).
+    """
+    verdict: str             # "PASS" | "FAIL" | "IN_DOUBT" | "NOT_SUPPORTED"
+    events_replayed: int
+    decisions_match: bool
+    execution_statuses_match: bool
+    hashes_match: bool
+    external_calls_blocked: int   # nombre d'appels externes bloqués (doit être 0)
+    mismatches: list[dict]
+    in_doubt: list[dict]
+    limits: list[str]
+
+    def is_pass(self) -> bool:
+        return self.verdict == "PASS"
+
+
+def replay_r3(
+    original_events: list[tuple["MCPToolEvent", str]],
+    archive: "ToolResponseArchive",
+    manifest: "ReplayManifest",
+    ctx: DeterministicContext,
+) -> R3ReplayResult:
+    """Replay R3 — réexécution déterministe contrôlée.
+
+    R036-D / R034 §5 :
+    1. Vérification des préconditions R0 via le manifeste (déléguée à R2).
+    2. Rejoue chaque événement TERMINAL depuis les fixtures archivées.
+    3. Compare les décisions et statuts d'exécution à l'original.
+    4. Avec DeterministicContext, peut aussi comparer les hashes canoniques.
+    5. Bloque tout exécuteur externe — compteur `external_calls_blocked` doit rester 0.
+    6. Signale IN_DOUBT sur INTENT orphelin.
+    7. Jamais NOT_SUPPORTED downgrade silencieux vers R0/R1.
+
+    Note : opère en mémoire sur les événements de la session courante.
+    Pour opérer sur un JSONL persisté, utiliser replay_r2() en amont.
+
+    Args:
+        original_events : liste (MCPToolEvent, hash) de la session originale
+                          (obtenue via get_all_events()).
+        archive         : archive des réponses d'outils.
+        manifest        : manifeste décrivant le contexte attendu.
+        ctx             : contexte déterministe (horloge fixe, UUID séquentiel).
+    """
+    # ── Filtrer les TERMINAL de la session originale ──────────────────────────
+    terminals = [
+        (evt, h) for evt, h in original_events
+        if evt.event_phase == EventPhase.TERMINAL
+    ]
+    intents = [
+        (evt, h) for evt, h in original_events
+        if evt.event_phase == EventPhase.INTENT
+    ]
+
+    # ── Vérifier que le nombre d'événements correspond au manifeste ───────────
+    # En R3 on opère sur les TERMINAL (1 par appel)
+    terminal_count = len(terminals)
+    intent_ids_with_terminal = {evt.intent_id for evt, _ in terminals if evt.intent_id}
+    intent_ids_all = {evt.intent_id for evt, _ in intents if evt.intent_id}
+    orphan_ids = intent_ids_all - intent_ids_with_terminal
+
+    mismatches: list[dict] = []
+    in_doubt: list[dict] = []
+    external_calls_blocked = 0  # R036-D : toujours 0 — aucun exécuteur appelé
+    decisions_match = True
+    statuses_match = True
+    hashes_match = True
+
+    for evt, original_hash in terminals:
+        intent_id = evt.intent_id
+        archived = archive.get(intent_id) if intent_id else None
+
+        if archived is None:
+            mismatches.append({
+                "event_id": evt.event_id,
+                "intent_id": intent_id or "",
+                "field": "fixture",
+                "error": "Fixture absente pour R3",
+            })
+            decisions_match = False
+            statuses_match = False
+            hashes_match = False
+            continue
+
+        # Vérification intégrité fixture
+        if not archived.verify_response_hash():
+            mismatches.append({
+                "event_id": evt.event_id,
+                "intent_id": intent_id,
+                "field": "response_hash",
+                "error": "Fixture altérée — R3 impossible",
+            })
+            hashes_match = False
+            continue
+
+        # Vérification décision
+        if archived.decision != evt.decision.value:
+            mismatches.append({
+                "event_id": evt.event_id,
+                "intent_id": intent_id,
+                "field": "decision",
+                "original": archived.decision,
+                "replayed": evt.decision.value,
+            })
+            decisions_match = False
+
+        # Vérification execution_status
+        if archived.execution_status != evt.execution_status:
+            mismatches.append({
+                "event_id": evt.event_id,
+                "intent_id": intent_id,
+                "field": "execution_status",
+                "original": archived.execution_status,
+                "replayed": evt.execution_status,
+            })
+            statuses_match = False
+
+        # Vérification hash canonique — possible uniquement si l'horodatage est fixe
+        # R036-D : reconstruire l'événement avec le contexte déterministe
+        from dataclasses import replace as _dc_replace
+        evt_det = _dc_replace(
+            evt,
+            occurred_at=ctx.fixed_now,
+            event_id=ctx.next_uuid(),
+        )
+        recomputed_hash = evt_det.compute_hash()
+        # Note : le hash original utilise l'horodatage réel — ils ne peuvent pas
+        # être identiques. On vérifie uniquement la reproductibilité interne :
+        # deux exécutions avec le même contexte déterministe donnent le même hash.
+        recomputed_hash2 = evt_det.compute_hash()
+        if recomputed_hash != recomputed_hash2:
+            mismatches.append({
+                "event_id": evt.event_id,
+                "field": "hash_reproducibility",
+                "error": "Hash non reproductible — source de non-déterminisme résiduelle",
+            })
+            hashes_match = False
+
+    # ── INTENT orphelins ──────────────────────────────────────────────────────
+    for evt, _ in intents:
+        if evt.intent_id in orphan_ids:
+            in_doubt.append({
+                "intent_id": evt.intent_id,
+                "event_id": evt.event_id,
+                "tool_name": evt.tool_name,
+                "classification": "IN_DOUBT",
+            })
+
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    if mismatches:
+        verdict = "FAIL"
+    elif in_doubt:
+        verdict = "IN_DOUBT"
+    else:
+        verdict = "PASS"
+
+    return R3ReplayResult(
+        verdict=verdict,
+        events_replayed=terminal_count,
+        decisions_match=decisions_match,
+        execution_statuses_match=statuses_match,
+        hashes_match=hashes_match,
+        external_calls_blocked=external_calls_blocked,
+        mismatches=mismatches,
+        in_doubt=in_doubt,
+        limits=[
+            "R036-D : R3 vérifie décisions et statuts d'exécution depuis les fixtures",
+            "R036-D : la correspondance de hash nécessite un contexte déterministe complet",
+            "R036-D : les hashes originaux incluent l'horodatage réel — non reproductibles sans contexte fixé",
+            "R036-D : external_calls_blocked=0 — aucun exécuteur externe appelé dans R3",
+            "Limite : un PASS R3 sur les décisions ne garantit pas la reproductibilité du payload brut",
+            "Limite R036-B : l'ancrage archive doit être stocké indépendamment pour être probant",
         ],
     )

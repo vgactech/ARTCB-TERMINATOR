@@ -1684,3 +1684,453 @@ def test_l019_p1_replay_r2_sentinel_external_calls_always_zero(tmp_path):
         "La sentinelle doit confirmer qu'aucun exécuteur externe n'a été appelé"
     )
     assert result.events_replayed == 5
+
+
+# ─── R036-A — Sentinelle dynamique ───────────────────────────────────────────
+
+
+def test_r036_a_failfast_executor_never_called_in_replay():
+    """R036-A : avec is_replay=True, make_failfast_executor ne reçoit aucun appel."""
+    from guardian_mcp.instrumentation import ExternalCallForbiddenError, make_failfast_executor
+
+    violations = []
+    executor = make_failfast_executor(violations)
+    instr = make_instr()
+
+    instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=executor,
+        is_replay=True,
+    )
+
+    assert len(violations) == 0, (
+        f"R036-A : l'exécuteur fail-fast ne doit pas être appelé en replay — "
+        f"violations : {violations}"
+    )
+
+
+def test_r036_a_failfast_executor_raises_if_called_without_replay():
+    """R036-A (inverse) : sans is_replay, le fail-fast est appelé, enregistre la violation.
+
+    L'exception est absorbée par l'instrumentation (bloc ALLOW) — execution_status=FAILED.
+    La violation est enregistrée dans `violations` : c'est la sentinelle dynamique.
+    """
+    from guardian_mcp.instrumentation import make_failfast_executor
+
+    violations = []
+    executor = make_failfast_executor(violations)
+    instr = make_instr()
+
+    result = instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=executor,
+        # is_replay=False par défaut — l'exécuteur sera appelé et doit échouer
+    )
+
+    # La violation est enregistrée dans violations
+    assert len(violations) == 1, "Une violation doit être enregistrée"
+    assert violations[0]["tool_name"] == "blockchain.query"
+    assert "violation" in violations[0]["error"].lower()
+
+    # L'instrumentation a absorbé l'exception et produit FAILED
+    event, _ = instr.get_events()[-1]
+    assert event.execution_status == "FAILED", (
+        "Sans replay, le fail-fast est appelé → exception absorbée → FAILED"
+    )
+
+
+def test_r036_a_failfast_block_never_reaches_executor():
+    """R036-A : un appel BLOCK ne reçoit jamais le fail-fast (l'outil est bloqué avant)."""
+    from guardian_mcp.instrumentation import make_failfast_executor
+
+    violations = []
+    executor = make_failfast_executor(violations)
+    instr = make_instr()
+
+    # wallet.sign est BLOCK — l'exécuteur n'est jamais appelé, replay ou non
+    instr.handle_tool_call(
+        {"name": "wallet.sign", "arguments": {}},
+        executor=executor,
+    )
+
+    assert len(violations) == 0, "BLOCK ne doit jamais appeler l'exécuteur"
+
+
+def test_r036_a_multiple_replay_calls_zero_violations():
+    """R036-A : 10 appels en replay avec fail-fast → 0 violations."""
+    from guardian_mcp.instrumentation import make_failfast_executor
+
+    violations = []
+    executor = make_failfast_executor(violations)
+    instr = make_instr()
+
+    for i in range(10):
+        instr.handle_tool_call(
+            {"name": "blockchain.query", "arguments": {"n": i}},
+            executor=executor,
+            is_replay=True,
+        )
+
+    assert len(violations) == 0, (
+        f"10 appels replay → 0 violations attendues, trouvées : {violations}"
+    )
+
+
+# ─── R036-B — Ancrage archive ─────────────────────────────────────────────────
+
+
+def test_r036_b_anchor_created_and_verified(tmp_path):
+    """R036-B : create_archive_anchor crée un ancrage valide vérifié par verify_archive_anchor."""
+    from guardian_mcp.instrumentation import (
+        ToolResponseArchive, create_archive_anchor, make_recording_sink, verify_archive_anchor,
+    )
+
+    ledger = tmp_path / "anchor.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    anchor = create_archive_anchor(archive, run_id="run:anchor-test")
+    assert anchor.entry_count == 2
+    assert len(anchor.archive_hash) == 64
+
+    ok, reason = verify_archive_anchor(archive, anchor)
+    assert ok, f"Ancrage valide doit passer : {reason}"
+    assert reason == ""
+
+
+def test_r036_b_anchor_detects_tampered_fixture():
+    """R036-B : l'ancrage détecte la modification d'une fixture après sa création."""
+    from guardian_mcp.instrumentation import (
+        ToolResponseArchive, create_archive_anchor, make_recording_sink, verify_archive_anchor,
+    )
+    import tempfile, os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        ledger = Path(tmp) / "anchor2.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+        anchor = create_archive_anchor(archive, run_id="run:tamper-test")
+
+        # Altérer une fixture après création de l'ancrage
+        iid = list(archive._entries.keys())[0]
+        archive._entries[iid].response_hash = "f" * 64
+
+        ok, reason = verify_archive_anchor(archive, anchor)
+        assert not ok, "L'ancrage doit détecter la modification de fixture"
+        assert "Hash d'archive diverge" in reason
+
+
+def test_r036_b_anchor_detects_added_fixture():
+    """R036-B : l'ancrage détecte l'ajout d'une fixture après sa création."""
+    from guardian_mcp.instrumentation import (
+        ArchivedToolResponse, ToolResponseArchive,
+        create_archive_anchor, verify_archive_anchor,
+    )
+
+    archive = ToolResponseArchive()
+    anchor = create_archive_anchor(archive, run_id="run:add-test")
+    assert anchor.entry_count == 0
+
+    # Ajouter une fixture après création de l'ancrage
+    payload = {"decision": "ALLOW", "execution_status": "EXECUTED",
+               "output_summary": "ok", "tool_name": "t"}
+    h = ArchivedToolResponse.compute_response_hash(payload)
+    archive.record(ArchivedToolResponse(
+        intent_id="intent:new", tool_name="t", input_hash="a"*64,
+        decision="ALLOW", execution_status="EXECUTED",
+        response_payload=payload, response_hash=h,
+    ))
+
+    ok, reason = verify_archive_anchor(archive, anchor)
+    assert not ok, "L'ancrage doit détecter l'ajout d'une fixture"
+    assert "Nombre de fixtures" in reason
+
+
+def test_r036_b_anchor_serialization():
+    """R036-B : l'ancrage peut être sérialisé et désérialisé."""
+    from guardian_mcp.instrumentation import ArchiveAnchor, ToolResponseArchive, create_archive_anchor
+
+    archive = ToolResponseArchive()
+    anchor = create_archive_anchor(archive, run_id="run:serial")
+    d = anchor.to_dict()
+    anchor2 = ArchiveAnchor.from_dict(d)
+    assert anchor2.archive_hash == anchor.archive_hash
+    assert anchor2.entry_count == anchor.entry_count
+    assert anchor2.run_id == anchor.run_id
+
+
+def test_r036_b_archive_hash_deterministic():
+    """R036-B : compute_archive_hash est déterministe — même archive = même hash."""
+    from guardian_mcp.instrumentation import (
+        ArchivedToolResponse, ToolResponseArchive, compute_archive_hash,
+    )
+
+    archive = ToolResponseArchive()
+    payload = {"decision": "ALLOW", "execution_status": "EXECUTED",
+               "output_summary": "ok", "tool_name": "t"}
+    h = ArchivedToolResponse.compute_response_hash(payload)
+    archive.record(ArchivedToolResponse(
+        intent_id="intent:det", tool_name="t", input_hash="a"*64,
+        decision="ALLOW", execution_status="EXECUTED",
+        response_payload=payload, response_hash=h,
+    ))
+
+    hash1 = compute_archive_hash(archive)
+    hash2 = compute_archive_hash(archive)
+    assert hash1 == hash2, "Hash d'archive doit être déterministe"
+    assert len(hash1) == 64
+
+
+# ─── R036-C — Fidélité des données archivées ─────────────────────────────────
+
+
+def test_r036_c_archived_response_has_canonicalization_version():
+    """R036-C : les fixtures archivées portent canonicalization_version."""
+    from guardian_mcp.instrumentation import ToolResponseArchive, make_recording_sink
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "canon.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+        for entry in archive._entries.values():
+            assert entry.canonicalization_version == "jcs-v1", (
+                "La version de canonicalisation doit être 'jcs-v1'"
+            )
+
+
+def test_r036_c_raw_response_hash_empty_by_default():
+    """R036-C : raw_response_hash est vide par défaut (payload brut non capturé)."""
+    from guardian_mcp.instrumentation import ToolResponseArchive, make_recording_sink
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "raw.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+        for entry in archive._entries.values():
+            assert entry.raw_response_hash == "", (
+                "raw_response_hash doit être vide — le payload brut n'est pas capturé "
+                "par make_recording_sink (R036-C : limite documentée)"
+            )
+
+
+def test_r036_c_response_payload_is_guardian_summary_not_raw():
+    """R036-C : response_payload contient le résumé Guardian, pas le payload brut."""
+    from guardian_mcp.instrumentation import ToolResponseArchive, make_recording_sink
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "summary.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+        instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+        for entry in archive._entries.values():
+            payload = entry.response_payload
+            # Le résumé Guardian contient exactement ces clés
+            assert "decision" in payload, "Résumé doit contenir 'decision'"
+            assert "execution_status" in payload, "Résumé doit contenir 'execution_status'"
+            assert "output_summary" in payload, "Résumé doit contenir 'output_summary'"
+            assert "tool_name" in payload, "Résumé doit contenir 'tool_name'"
+            # Le payload brut (isError, content) N'est PAS dans le résumé
+            assert "isError" not in payload, (
+                "R036-C : le payload brut (isError) ne doit pas être dans le résumé Guardian"
+            )
+            assert "content" not in payload, (
+                "R036-C : le payload brut (content) ne doit pas être dans le résumé Guardian"
+            )
+
+
+def test_r036_c_canonicalization_version_persisted_in_jsonl():
+    """R036-C : canonicalization_version est persisté dans le JSONL de l'archive."""
+    import json as _json
+    from guardian_mcp.instrumentation import ToolResponseArchive, make_recording_sink
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "cvp.jsonl"
+        archive_path = Path(tmp) / "archive.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+        archive.to_jsonl(archive_path)
+
+        lines = [_json.loads(l) for l in archive_path.read_text().splitlines() if l.strip()]
+        for line in lines:
+            assert "canonicalization_version" in line, (
+                "canonicalization_version doit être dans le JSONL de l'archive"
+            )
+            assert line["canonicalization_version"] == "jcs-v1"
+
+
+# ─── R036-D — Replay R3 déterministe ─────────────────────────────────────────
+
+
+def test_r036_d_replay_r3_pass_complete_scenario(tmp_path):
+    """R036-D : replay_r3 PASS sur une session complète avec fixtures et contexte fixe."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        DeterministicContext, ReplayManifest, ToolResponseArchive,
+        make_recording_sink, replay_r3,
+    )
+
+    ledger = tmp_path / "r3_pass.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r3-pass",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+    ctx = DeterministicContext.create(fixed_now="2000-01-01T00:00:00Z")
+
+    result = replay_r3(instr.get_all_events(), archive, manifest, ctx)
+    assert result.is_pass(), f"R3 doit passer : {result.mismatches}"
+    assert result.events_replayed == 3
+    assert result.decisions_match is True
+    assert result.execution_statuses_match is True
+    assert result.hashes_match is True
+    assert result.external_calls_blocked == 0
+
+
+def test_r036_d_replay_r3_fail_missing_fixture():
+    """R036-D : replay_r3 FAIL si une fixture est absente."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        DeterministicContext, ReplayManifest, ToolResponseArchive,
+        make_recording_sink, replay_r3,
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "r3_missing.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+        lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+        manifest = ReplayManifest(run_id="r", original_chain_tip=lines[-1]["event_hash"], expected_count=len(lines))
+        ctx = DeterministicContext.create()
+
+        empty_archive = ToolResponseArchive()
+        result = replay_r3(instr.get_all_events(), empty_archive, manifest, ctx)
+        assert not result.is_pass(), "R3 doit FAIL sans fixture"
+        assert result.decisions_match is False
+
+
+def test_r036_d_deterministic_context_reproducible_uuid():
+    """R036-D : DeterministicContext génère des UUIDs reproductibles."""
+    from guardian_mcp.instrumentation import DeterministicContext
+
+    ctx1 = DeterministicContext.create("2000-01-01T00:00:00Z")
+    ctx2 = DeterministicContext.create("2000-01-01T00:00:00Z")
+
+    uuids1 = [ctx1.next_uuid() for _ in range(5)]
+    uuids2 = [ctx2.next_uuid() for _ in range(5)]
+
+    assert uuids1 == uuids2, (
+        f"Les UUIDs déterministes doivent être identiques : {uuids1} vs {uuids2}"
+    )
+
+
+def test_r036_d_replay_r3_in_doubt_orphan_intent():
+    """R036-D : replay_r3 IN_DOUBT si un INTENT n'a pas de TERMINAL."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        DeterministicContext, EventPhase, ReplayManifest, ToolResponseArchive,
+        make_recording_sink, replay_r3,
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "r3_indoubt.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+        instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+        # Simuler un journal complet mais retirer le dernier TERMINAL des events en mémoire
+        all_events = instr.get_all_events()
+        # Supprimer le TERMINAL du 2e appel (dernier événement)
+        assert all_events[-1][0].event_phase == EventPhase.TERMINAL
+        truncated_events = all_events[:-1]  # sans le dernier TERMINAL
+
+        lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+        # Manifeste basé sur le JSONL complet (pas tronqué)
+        manifest = ReplayManifest(
+            run_id="run:r3-indoubt",
+            original_chain_tip=lines[-1]["event_hash"],
+            expected_count=len(lines),
+        )
+        ctx = DeterministicContext.create()
+
+        result = replay_r3(truncated_events, archive, manifest, ctx)
+        assert result.verdict == "IN_DOUBT", (
+            f"R3 doit retourner IN_DOUBT avec INTENT orphelin, verdict : {result.verdict}"
+        )
+        assert len(result.in_doubt) == 1
+
+
+def test_r036_d_replay_r3_external_calls_blocked_always_zero():
+    """R036-D : external_calls_blocked est toujours 0 dans R3 — aucun exécuteur appelé."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        DeterministicContext, ReplayManifest, ToolResponseArchive,
+        make_recording_sink, replay_r3,
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "r3_blocked.jsonl"
+        archive = ToolResponseArchive()
+        sink = make_recording_sink(ledger, archive)
+        instr = make_instr(event_sink=sink)
+        for _ in range(4):
+            instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+        lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+        manifest = ReplayManifest(
+            run_id="run:r3-blocked",
+            original_chain_tip=lines[-1]["event_hash"],
+            expected_count=len(lines),
+        )
+        ctx = DeterministicContext.create()
+        result = replay_r3(instr.get_all_events(), archive, manifest, ctx)
+
+        assert result.is_pass()
+        assert result.external_calls_blocked == 0, (
+            "external_calls_blocked doit être 0 — aucun exécuteur externe appelé dans R3"
+        )
