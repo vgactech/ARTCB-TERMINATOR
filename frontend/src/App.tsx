@@ -108,21 +108,13 @@ function App() {
           {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p></motion.article>)}
         </section>
 
-        <section className="mt-6 grid gap-6 lg:grid-cols-[1.65fr_1fr]">
-          <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
+        <section className="mt-6">
+          <article className="rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
             <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div>{result && <button type="button" onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10"><Activity size={15} aria-hidden="true" /> View execution graph</button>}</div>
             <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
-            <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs"><span className="text-slate-500">Protected execution boundary</span><span className="font-mono text-emerald-300">4 NODES · READY</span></div>
-          </article>
-          <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
-            <p className="text-sm font-semibold text-white">Latest operation</p><p className="mt-1 text-xs text-slate-500">{completed ? `${result.decision}: ${result.reason}` : running ? 'Analyzing agent traffic' : 'Awaiting scenario'}</p>
-            <div className="mt-6 grid min-h-72 place-items-center rounded-xl border border-dashed border-white/8 bg-white/[0.015] px-8 text-center">
-              {apiError ? <div role="alert"><p className="font-mono text-xs font-bold text-rose-300">BACKEND OFFLINE</p><p className="mt-2 text-sm leading-6 text-slate-400">{apiError}</p></div> : completed ? (
-                <motion.div initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
-                  <div className={`mx-auto flex size-16 items-center justify-center rounded-2xl border ${result.decision === 'ALLOW' ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300' : result.decision === 'ESCALATE' ? 'border-amber-400/25 bg-amber-400/10 text-amber-300' : 'border-rose-400/25 bg-rose-400/10 text-rose-300'}`}><ShieldCheck size={34} aria-hidden="true" /></div>
-                  <p className="mt-4 font-mono text-xs font-bold tracking-[0.24em] text-white">{result.decision}</p><p className="mt-2 text-sm text-slate-400">{result.tool_name}: {result.execution_status.replace('_', ' ').toLowerCase()}.</p>
-                </motion.div>
-              ) : <div><ShieldCheck className={`mx-auto ${running ? 'animate-pulse text-emerald-400' : 'text-slate-700'}`} size={32} aria-hidden="true" /><p className="mt-3 text-sm text-slate-500">{running ? 'Guardian is evaluating the request…' : 'Choose a scenario and run it against the backend.'}</p></div>}
+            <div className="mt-5 flex flex-col gap-2 rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs sm:flex-row sm:items-center sm:justify-between">
+              {apiError ? <span role="alert" className="text-rose-300">{apiError}</span> : <span className="text-slate-400">{completed ? <><strong className="font-semibold text-white">{result.decision}</strong> · {result.reason}</> : running ? 'Guardian is evaluating the request…' : 'Run a scenario to see the decision.'}</span>}
+              {completed && <span className="font-mono text-emerald-300">{result.tool_name} · {result.execution_status.replace('_', ' ')}</span>}
             </div>
           </article>
         </section>
