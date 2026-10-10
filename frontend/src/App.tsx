@@ -94,7 +94,7 @@ function App() {
 
         <section className="mt-8" aria-labelledby="scenario-heading">
           <div className="flex items-end justify-between gap-4">
-            <div><h2 id="scenario-heading" className="text-sm font-semibold text-white">Choose a live policy scenario</h2><p className="mt-1 text-xs text-slate-500">Each option is evaluated by the Guardian backend.</p></div>
+            <div><h2 id="scenario-heading" className="text-lg font-semibold tracking-tight text-white sm:text-xl">Choose a live policy scenario</h2><p className="mt-1 text-xs text-slate-500">Each option is evaluated by the Guardian backend.</p></div>
             <span className="font-mono text-[10px] text-slate-600">{scenarios.length} AVAILABLE</span>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
