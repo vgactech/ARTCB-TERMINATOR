@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
+import { EventTimeline } from './components/EventTimeline'
 import { SecurityResults } from './components/SecurityResults'
 
 const metrics = [
@@ -161,6 +162,7 @@ function App() {
               sessionId={identifiers.session}
               runId={identifiers.run}
             />
+            <EventTimeline />
           </motion.div>
         )}
       </div>
