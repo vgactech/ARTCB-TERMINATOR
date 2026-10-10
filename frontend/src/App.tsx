@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Activity, Bell, CircleCheck, Play, Radar, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
@@ -9,6 +9,10 @@ import { SecurityResults } from './components/SecurityResults'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
 import type { PolicyScenario, PolicyScenarioResult } from './api/guardian'
 
+const ExecutionGraphOverlay = lazy(() =>
+  import('./components/ExecutionGraphOverlay').then((module) => ({ default: module.ExecutionGraphOverlay })),
+)
+
 function App() {
   const [activeAgent, setActiveAgent] = useState(-1)
   const [running, setRunning] = useState(false)
@@ -16,6 +20,7 @@ function App() {
   const [selectedScenario, setSelectedScenario] = useState('sensitive-exfiltration')
   const [result, setResult] = useState<PolicyScenarioResult | null>(null)
   const [apiError, setApiError] = useState('')
+  const [graphOpen, setGraphOpen] = useState(false)
   const [engineState, setEngineState] = useState<'checking' | 'online' | 'offline'>('checking')
   const completed = activeAgent === 4 && result !== null
 
@@ -33,6 +38,7 @@ function App() {
     setApiError('')
     setActiveAgent(-1)
     setRunning(true)
+    setGraphOpen(true)
     try {
       const nextResult = await runGuardianScenario(selectedScenario)
       setResult(nextResult)
@@ -77,15 +83,15 @@ function App() {
       </header>
 
       <div className="relative mx-auto max-w-7xl px-5 py-8 lg:px-8 lg:py-10">
-        <section className="flex min-w-0 flex-col justify-between gap-6 md:flex-row md:items-end">
+        <section className="min-w-0">
           <div className="min-w-0">
             <div className="mb-3 flex items-center gap-2 font-mono text-xs font-semibold tracking-[0.2em] text-emerald-300 uppercase"><Radar size={15} /> Live defense environment</div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance text-white md:text-5xl">Security operations overview</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Run security requests through four distinct backend agents and inspect Guardian's policy evidence.</p>
+            <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 sm:w-auto">
+              <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
+            </motion.button>
           </div>
-          <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 md:w-auto">
-            <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
-          </motion.button>
           <span id="simulation-status" className="sr-only" aria-live="polite">{apiError || (completed ? `Guardian returned ${result.decision}.` : running ? `Processing agent ${activeAgent + 1} of 4.` : 'Simulation ready.')}</span>
         </section>
 
@@ -109,7 +115,7 @@ function App() {
 
         <section className="mt-6 grid gap-6 lg:grid-cols-[1.65fr_1fr]">
           <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
-            <div className="flex items-center justify-between"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div><Activity size={18} className="text-emerald-300" aria-hidden="true" /></div>
+            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div><button type="button" disabled={!result} onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10 disabled:opacity-30"><Activity size={15} aria-hidden="true" /> Open graph</button></div>
             <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
             <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs"><span className="text-slate-500">Protected execution boundary</span><span className="font-mono text-emerald-300">4 NODES · READY</span></div>
           </article>
@@ -129,6 +135,7 @@ function App() {
         {completed && result && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}><OrchestrationProof result={result} /><SecurityResults result={result} /><EventTimeline events={result.events} /><ReplayResults result={result} /></motion.div>}
         <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">ARTCB TERMINATOR · Guardian Security Console</footer>
       </div>
+      {graphOpen && <Suspense fallback={<div className="fixed inset-0 z-50 grid place-items-center bg-black/75 text-sm text-cyan-300">Loading execution graph…</div>}><ExecutionGraphOverlay open result={result} activeAgent={activeAgent} onClose={() => setGraphOpen(false)} /></Suspense>}
     </main>
   )
 }

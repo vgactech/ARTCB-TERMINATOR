@@ -36,3 +36,43 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+.guardian-graph-node {
+  width: 190px !important;
+  border: 1px solid rgb(255 255 255 / 10%) !important;
+  border-radius: 14px !important;
+  background: #080d17 !important;
+  padding: 14px !important;
+  color: #e2e8f0 !important;
+  box-shadow: 0 16px 32px rgb(0 0 0 / 28%) !important;
+}
+
+.guardian-graph-active {
+  border-color: rgb(34 211 238 / 65%) !important;
+  box-shadow: 0 0 28px rgb(34 211 238 / 22%) !important;
+}
+
+.guardian-graph-complete {
+  border-color: rgb(52 211 153 / 28%) !important;
+}
+
+.guardian-graph-waiting {
+  width: 240px !important;
+  color: #67e8f9 !important;
+}
+
+.guardian-graph-decision {
+  width: 180px !important;
+}
+
+.guardian-decision-block {
+  border-color: rgb(251 113 133 / 45%) !important;
+}
+
+.guardian-decision-allow {
+  border-color: rgb(52 211 153 / 45%) !important;
+}
+
+.guardian-decision-escalate {
+  border-color: rgb(251 191 36 / 45%) !important;
+}
