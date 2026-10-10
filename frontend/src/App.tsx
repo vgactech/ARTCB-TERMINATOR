@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
+import { ReplayResults } from './components/ReplayResults'
 import { SecurityResults } from './components/SecurityResults'
 
 const metrics = [
@@ -163,6 +164,7 @@ function App() {
               runId={identifiers.run}
             />
             <EventTimeline />
+            <ReplayResults />
           </motion.div>
         )}
       </div>
