@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Background, Controls, MarkerType, ReactFlow } from '@xyflow/react'
+import { Background, Controls, MarkerType, Position, ReactFlow } from '@xyflow/react'
 import type { Edge, Node } from '@xyflow/react'
 import { Network, X } from 'lucide-react'
 import type { PolicyScenarioResult } from '../api/guardian'
@@ -23,7 +23,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
   const { nodes, edges } = useMemo(() => {
     if (!result) {
       return {
-        nodes: [{ id: 'waiting', position: { x: 390, y: 170 }, data: { label: 'Waiting for Guardian backend…' }, className: 'guardian-graph-node guardian-graph-waiting' }] as Node[],
+        nodes: [{ id: 'waiting', position: { x: 420, y: 190 }, data: { label: 'Waiting for Guardian backend…' }, className: 'guardian-graph-node guardian-graph-waiting' }] as Node[],
         edges: [] as Edge[],
       }
     }
@@ -31,7 +31,9 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
     const visibleAgents = result.agents.filter((agent) => agent.index <= activeAgent)
     const graphNodes: Node[] = visibleAgents.map((agent) => ({
       id: agent.id,
-      position: { x: agent.index * 245, y: agent.index % 2 === 0 ? 125 : 235 },
+      position: { x: 30 + agent.index * 235, y: 180 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
       data: {
         label: (
           <div className="text-left">
@@ -52,6 +54,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
       animated: agent.index === activeAgent,
       markerEnd: { type: MarkerType.ArrowClosed, color: '#22d3ee' },
       style: { stroke: '#22d3ee', strokeWidth: 2 },
+      type: 'smoothstep',
       label: agent.role === 'propagator' ? 'causal relay' : undefined,
       labelStyle: { fill: '#94a3b8', fontSize: 9 },
       labelBgStyle: { fill: '#080d17' },
@@ -60,7 +63,9 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
     if (activeAgent >= 4) {
       graphNodes.push({
         id: 'decision',
-        position: { x: 980, y: 175 },
+        position: { x: 970, y: 180 },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
         data: {
           label: (
             <div className="text-center">
@@ -79,6 +84,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
         animated: true,
         markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
         style: { stroke: '#34d399', strokeWidth: 2 },
+        type: 'smoothstep',
         label: 'policy evaluation',
         labelStyle: { fill: '#94a3b8', fontSize: 9 },
         labelBgStyle: { fill: '#080d17' },
@@ -101,7 +107,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
           <button type="button" onClick={onClose} className="rounded-lg border border-white/8 p-2 text-slate-400 transition hover:bg-white/5 hover:text-white" aria-label="Close execution graph"><X size={18} /></button>
         </header>
         <div className="relative min-h-0 flex-1">
-          <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }} minZoom={0.45} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
+          <ReactFlow key={`${nodes.length}-${activeAgent}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.28, minZoom: 0.55, maxZoom: 1 }} minZoom={0.4} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}>
             <Background color="#1e293b" gap={24} size={1} />
             <Controls showInteractive={false} />
           </ReactFlow>
