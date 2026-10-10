@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import { Bot, RadioTower, Route, Shield } from 'lucide-react'
+import type { PolicyScenarioResult } from '../api/guardian'
 
 const agents = [
   { id: 'A', name: 'Orchestrator', role: 'Coordinates session', icon: RadioTower, color: 'text-sky-300', ring: 'border-sky-400/25 bg-sky-400/8' },
@@ -11,13 +12,15 @@ const agents = [
 type AgentFlowProps = {
   activeAgent: number
   running: boolean
+  stages?: PolicyScenarioResult['agents']
 }
 
-export function AgentFlow({ activeAgent, running }: AgentFlowProps) {
+export function AgentFlow({ activeAgent, running, stages = [] }: AgentFlowProps) {
   return (
     <div className="mt-6 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
       {agents.map((agent, index) => {
         const Icon = agent.icon
+        const stage = stages.find((item) => item.index === index)
         return (
           <div key={agent.id} className="contents">
             <motion.article
@@ -40,7 +43,8 @@ export function AgentFlow({ activeAgent, running }: AgentFlowProps) {
                 <span className={`size-1.5 rounded-full ${activeAgent >= index ? 'bg-emerald-400' : 'bg-slate-700'}`} />
               </div>
               <h3 className="mt-1 text-sm font-semibold text-white">{agent.name}</h3>
-              <p className="mt-1 text-[11px] leading-4 text-slate-500">{agent.role}</p>
+              <p className="mt-1 text-[11px] leading-4 text-slate-500">{stage?.id ?? agent.role}</p>
+              {stage && <p className="mt-2 truncate font-mono text-[9px] text-emerald-400" title={stage.artifact_id}>{stage.status} · {stage.events} EVENT{stage.events === 1 ? '' : 'S'}</p>}
             </motion.article>
 
             {index < agents.length - 1 && (

@@ -27,30 +27,21 @@ function App() {
       .catch(() => setEngineState('offline'))
   }, [])
 
-  useEffect(() => {
-    if (!running) return
-    const timer = window.setInterval(() => {
-      setActiveAgent((current) => {
-        if (current >= 3) {
-          window.clearInterval(timer)
-          setRunning(false)
-          return 4
-        }
-        return current + 1
-      })
-    }, 850)
-    return () => window.clearInterval(timer)
-  }, [running])
-
   const runSimulation = async () => {
     setResult(null)
     setApiError('')
-    setActiveAgent(0)
+    setActiveAgent(-1)
     setRunning(true)
     try {
       const nextResult = await runGuardianScenario(selectedScenario)
       setResult(nextResult)
       setEngineState('online')
+      for (const stage of nextResult.agents) {
+        setActiveAgent(stage.index)
+        await new Promise((resolve) => window.setTimeout(resolve, 450))
+      }
+      setActiveAgent(4)
+      setRunning(false)
     } catch (error) {
       setRunning(false)
       setActiveAgent(-1)
@@ -61,7 +52,7 @@ function App() {
 
   const metrics = [
     { label: 'System status', value: engineState === 'online' ? 'Protected' : engineState === 'offline' ? 'Offline' : 'Checking', detail: 'Live backend connection', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
-    { label: 'Agents online', value: '4 / 4', detail: 'Network synchronized', iconClass: 'text-cyan-300' },
+    { label: 'Agents participating', value: result ? `${result.distinct_agent_count} / 4` : 'Ready', detail: result ? 'Distinct backend instances verified' : 'Awaiting execution', iconClass: 'text-cyan-300' },
     { label: 'Evidence chain', value: result?.chain_verification.verdict ?? 'Ready', detail: result ? `${result.events.length} real events recorded` : 'Awaiting execution', iconClass: 'text-violet-300' },
   ]
 
@@ -89,7 +80,7 @@ function App() {
           <div className="min-w-0">
             <div className="mb-3 flex items-center gap-2 font-mono text-xs font-semibold tracking-[0.2em] text-emerald-300 uppercase"><Radar size={15} /> Live defense environment</div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance text-white md:text-5xl">Security operations overview</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Run distinct security requests through the real Guardian policy engine and inspect its evidence.</p>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Run security requests through four distinct backend agents and inspect Guardian's policy evidence.</p>
           </div>
           <motion.button type="button" whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }} onClick={runSimulation} disabled={running || engineState !== 'online'} aria-busy={running} aria-describedby="simulation-status" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 font-semibold text-slate-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300 disabled:cursor-wait disabled:opacity-60 md:w-auto">
             <Play size={18} fill="currentColor" aria-hidden="true" /> {running ? 'Guardian evaluating…' : 'Run selected scenario'}
@@ -117,8 +108,8 @@ function App() {
 
         <section className="mt-6 grid gap-6 lg:grid-cols-[1.65fr_1fr]">
           <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
-            <div className="flex items-center justify-between"><div><p className="text-sm font-semibold text-white">Agent network</p><p className="mt-1 text-xs text-slate-500">Live execution path</p></div><Activity size={18} className="text-emerald-300" aria-hidden="true" /></div>
-            <AgentFlow activeAgent={activeAgent} running={running} />
+            <div className="flex items-center justify-between"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div><Activity size={18} className="text-emerald-300" aria-hidden="true" /></div>
+            <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
             <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs"><span className="text-slate-500">Protected execution boundary</span><span className="font-mono text-emerald-300">4 NODES · READY</span></div>
           </article>
           <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">

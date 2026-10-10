@@ -66,6 +66,27 @@ export type PolicyScenarioResult = {
   evidence_id: string | null
   guardian_event_id: string
   intent_id: string
+  agents: Array<{
+    index: number
+    id: string
+    role: 'orchestrator' | 'source' | 'propagator' | 'defender'
+    status: 'COMPLETED'
+    artifact_id: string
+    events: number
+  }>
+  distinct_agent_count: number
+  request: {
+    request_id: string
+    content_hash: string
+  }
+  propagation: {
+    propagation_id: string
+    payload_id: string
+    payload_content_hash: string
+    from_agent: string
+    via_agent: string
+    to_agent: string
+  }
   events: GuardianEvent[]
   chain_verification: {
     level: string
