@@ -5,3 +5,11 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Scripts locaux de lancement (cle USB)
+LANCER_*.bat
+DOPPLER_LOGIN.bat
+
+# Fichiers d'environnement local
+.env.local
+
