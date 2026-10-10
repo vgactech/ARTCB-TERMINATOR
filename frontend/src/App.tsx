@@ -2,10 +2,6 @@ import { motion } from 'framer-motion'
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Activity, CircleCheck, Play, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
-import { EventTimeline } from './components/EventTimeline'
-import { OrchestrationProof } from './components/OrchestrationProof'
-import { ReplayResults } from './components/ReplayResults'
-import { SecurityResults } from './components/SecurityResults'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
 import type { PolicyScenario, PolicyScenarioResult } from './api/guardian'
 
@@ -131,7 +127,6 @@ function App() {
           </article>
         </section>
 
-        {completed && result && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}><OrchestrationProof result={result} /><SecurityResults result={result} /><EventTimeline events={result.events} /><ReplayResults result={result} /></motion.div>}
         <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">ARTCB TERMINATOR · Guardian Security Console</footer>
       </div>
       {graphOpen && <Suspense fallback={<div className="fixed inset-0 z-50 grid place-items-center bg-black/75 text-sm text-cyan-300">Loading execution graph…</div>}><ExecutionGraphOverlay open result={result} activeAgent={activeAgent} onClose={() => setGraphOpen(false)} /></Suspense>}
