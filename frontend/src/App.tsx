@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
+import { SecurityResults } from './components/SecurityResults'
 
 const metrics = [
   { label: 'System status', value: 'Protected', detail: 'All controls active', tone: 'emerald' },
@@ -19,6 +20,7 @@ const metrics = [
 function App() {
   const [activeAgent, setActiveAgent] = useState(-1)
   const [running, setRunning] = useState(false)
+  const [identifiers, setIdentifiers] = useState({ evidence: '', session: '', run: '' })
   const blocked = activeAgent === 4
 
   useEffect(() => {
@@ -37,6 +39,11 @@ function App() {
   }, [running])
 
   const runSimulation = () => {
+    setIdentifiers({
+      evidence: `evidence:${crypto.randomUUID()}`,
+      session: `session:${crypto.randomUUID()}`,
+      run: `run:${crypto.randomUUID()}`,
+    })
     setActiveAgent(0)
     setRunning(true)
   }
@@ -146,6 +153,16 @@ function App() {
             </div>
           </article>
         </section>
+
+        {blocked && (
+          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+            <SecurityResults
+              evidenceId={identifiers.evidence}
+              sessionId={identifiers.session}
+              runId={identifiers.run}
+            />
+          </motion.div>
+        )}
       </div>
     </main>
   )
