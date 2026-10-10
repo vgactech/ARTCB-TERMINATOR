@@ -14,7 +14,7 @@ export function ReplayResults() {
             <h2 id="replay-heading" className="text-sm font-semibold text-white">Incident replay</h2>
             <p className="mt-1 text-xs text-slate-500">Independent verification levels</p>
           </div>
-          <FileSearch size={19} className="text-cyan-300" />
+          <FileSearch size={19} className="text-cyan-300" aria-hidden="true" />
         </div>
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -39,7 +39,7 @@ export function ReplayResults() {
             <p className="text-sm font-semibold text-white">Tamper challenge</p>
             <p className="mt-1 text-xs text-slate-500">Modified evidence replay</p>
           </div>
-          <ShieldAlert size={20} className="text-rose-300" />
+          <ShieldAlert size={20} className="text-rose-300" aria-hidden="true" />
         </div>
         <div className="relative mt-5 rounded-xl border border-rose-400/15 bg-rose-400/[0.035] p-4">
           <div className="flex items-center gap-2 font-mono text-xs font-bold tracking-wider text-rose-300">

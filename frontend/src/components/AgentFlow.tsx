@@ -15,14 +15,14 @@ type AgentFlowProps = {
 
 export function AgentFlow({ activeAgent, running }: AgentFlowProps) {
   return (
-    <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
+    <div className="mt-6 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
       {agents.map((agent, index) => {
         const Icon = agent.icon
         return (
           <div key={agent.id} className="contents">
             <motion.article
               animate={activeAgent === index ? { y: -5, scale: 1.025 } : { y: 0, scale: 1 }}
-              className={`group relative rounded-2xl border bg-[#080d17] p-4 transition ${
+              className={`group relative min-w-0 rounded-2xl border bg-[#080d17] p-4 transition ${
                 activeAgent === index ? 'border-emerald-300/50 shadow-lg shadow-emerald-950/40' : 'border-white/8'
               }`}
             >

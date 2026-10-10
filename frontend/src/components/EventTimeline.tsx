@@ -28,7 +28,7 @@ export function EventTimeline() {
           <li key={id} className="relative flex gap-4 pb-5">
             {index < events.length - 1 && <span className="absolute top-7 bottom-0 left-3.5 w-px bg-white/7" aria-hidden="true" />}
             <div className="relative z-10 flex size-7 shrink-0 items-center justify-center rounded-full border border-emerald-400/25 bg-[#07140f] text-emerald-300">
-              <CheckCircle2 size={14} />
+              <CheckCircle2 size={14} aria-hidden="true" />
             </div>
             <details className="group min-w-0 flex-1 rounded-xl border border-white/6 bg-white/[0.018] px-4 py-3 open:border-emerald-400/15">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
@@ -36,7 +36,7 @@ export function EventTimeline() {
                   <span className="mr-2 font-mono text-[10px] font-bold text-emerald-400">{id}</span>
                   <span className="text-sm font-medium text-slate-200">{title}</span>
                 </span>
-                <ChevronDown size={14} className="shrink-0 text-slate-600 transition group-open:rotate-180" />
+                <ChevronDown size={14} className="shrink-0 text-slate-600 transition group-open:rotate-180" aria-hidden="true" />
               </summary>
               <p className="mt-3 border-t border-white/6 pt-3 text-xs leading-5 text-slate-500">{detail}</p>
             </details>
