@@ -73,6 +73,18 @@ export type PolicyScenarioResult = {
     events_replayed: number
     mismatches: string[]
   }
+  tamper_verification: {
+    level: string
+    verdict: 'PASS' | 'FAIL'
+    events_replayed: number
+    mismatches: Array<{
+      event_id: string
+      field: string
+      expected: string
+      actual: string
+    }>
+    original_archive_unchanged: boolean
+  }
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? ''
