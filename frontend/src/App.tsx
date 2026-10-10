@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Activity, Bell, CircleCheck, Play, Radar, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
+import { OrchestrationProof } from './components/OrchestrationProof'
 import { ReplayResults } from './components/ReplayResults'
 import { SecurityResults } from './components/SecurityResults'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
@@ -125,7 +126,7 @@ function App() {
           </article>
         </section>
 
-        {completed && result && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}><SecurityResults result={result} /><EventTimeline events={result.events} /><ReplayResults result={result} /></motion.div>}
+        {completed && result && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}><OrchestrationProof result={result} /><SecurityResults result={result} /><EventTimeline events={result.events} /><ReplayResults result={result} /></motion.div>}
         <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">ARTCB TERMINATOR · Guardian Security Console</footer>
       </div>
     </main>
