@@ -1,20 +1,24 @@
-"""Scénario de démonstration Guardian — 4 agents, 9 étapes.
+"""Scénario de démonstration Guardian — 4 agents distincts, 9 étapes.
 
-Implémente le scénario R003 §14 et le plan R020 §3 :
+Implémente le scénario R003 §14 et le plan R020 §3, corrigé R021-001 :
 
-    S0 — Initialisation (session, run, 4 rôles)
-    S1 — Injection d'un payload hostile inerte
-    S2 — Propagation Agent B → Agent D
-    S3 — Tentative d'exfiltration (outil sensible)
-    S4 — Blocage Guardian (BLOCK + EvidenceId)
-    S5 — Replay R0 (intégrité de la chaîne intacte)
-    S6 — Replay R1 (cohérence BLOCK→EvidenceId)
+    Agent A — OrchestratorAgent : ouvre la session, coordonne les étapes
+    Agent B — AttackerAgent     : produit les payloads hostiles
+    Agent C — PropagatorAgent   : relaye le payload B → D (instance distincte)
+    Agent D — DefenderAgent     : bloque, produit les preuves, vérifie le replay
+
+    S0 — Initialisation (4 instances distinctes)
+    S1 — Injection d'un payload hostile inerte (Agent B)
+    S2 — Propagation Agent B → Agent C → Agent D (PropagatorAgent.relay_payload)
+    S3 — Tentative d'exfiltration (Agent D soumet à Guardian)
+    S4 — Blocage Guardian (BLOCK + EvidenceId UUID distinct)
+    S5 — Replay R0 (hashes + sequence_no monotone)
+    S6 — Replay R1 (EvidenceId canonique lié au BLOCK)
     S7 — Test d'altération (R0 FAIL sur copie modifiée)
     S8 — Rapport de synthèse
 
 Les agents sont déterministes, locaux et sans effet externe.
 Aucun vrai secret, wallet, endpoint réseau ou dépôt de production n'est utilisé.
-Conforme à R020 §2.3 et aux règles de périmètre R001→R020.
 
 Usage :
     python -m guardian_mcp.demo_scenario          # affiche le rapport complet
@@ -27,15 +31,10 @@ from __future__ import annotations
 import copy
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
 
-from guardian_mcp.attacker_agent import AttackerAgent, InjectionPayload, ExfiltrationCall
-from guardian_mcp.defender_agent import (
-    BlockingResult,
-    DefenderAgent,
-    PropagationEvent,
-    ReplayResult,
-)
+from guardian_mcp.agents import OrchestratorAgent, PropagatorAgent
+from guardian_mcp.attacker_agent import AttackerAgent
+from guardian_mcp.defender_agent import DefenderAgent, BlockingResult, ReplayResult
 from guardian_mcp.instrumentation import GuardianDecision
 
 
@@ -60,9 +59,7 @@ class DemoReport:
     run_id: str
     steps: list[StepResult] = field(default_factory=list)
 
-    # Données clés de la démo
-    injection: InjectionPayload | None = None
-    propagation: PropagationEvent | None = None
+    # Données clés
     blocking: BlockingResult | None = None
     replay_r0_intact: ReplayResult | None = None
     replay_r1_intact: ReplayResult | None = None
@@ -71,14 +68,7 @@ class DemoReport:
     def is_go(self) -> bool:
         """Critère Go/No-Go pour la compétition (R020 §8).
 
-        GO seulement si :
-        - injection visible (S1 PASS)
-        - propagation tracée (S2 PASS)
-        - action interdite non exécutée (S3+S4 PASS)
-        - BLOCK avec evidence_id (S4 PASS)
-        - replay intact PASS (S5 PASS)
-        - replay R1 intact PASS (S6 PASS)
-        - replay altéré FAIL détecté (S7 PASS)
+        GO seulement si S1 à S7 sont tous PASS.
         """
         required = {"S1", "S2", "S3", "S4", "S5", "S6", "S7"}
         passed = {s.step_id for s in self.steps if s.status == "PASS"}
@@ -109,87 +99,110 @@ class DemoReport:
 
 
 def run_demo_scenario() -> DemoReport:
-    """Exécute le scénario Guardian complet S0→S8.
+    """Exécute le scénario Guardian complet S0→S8 avec 4 agents distincts.
 
-    Retourne un DemoReport avec tous les résultats.
-    Aucun effet externe — entièrement en mémoire.
+    Chaque agent est une instance séparée avec son propre identifiant,
+    ses propres événements et son propre compteur de séquence.
     """
-    session_id = f"session:{uuid.uuid4()}"
-    run_id = f"run:{uuid.uuid4()}"
+    # ── S0 — Initialisation des 4 agents ─────────────────────────────────────
+    orchestrator = OrchestratorAgent()
+    attacker = AttackerAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
+    propagator = PropagatorAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
+    defender = DefenderAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
 
-    report = DemoReport(session_id=session_id, run_id=run_id)
+    # Ouvrir la session via l'orchestrateur
+    ctx = orchestrator.open_session(
+        attacker_id=attacker.AGENT_ID,
+        propagator_id=propagator.AGENT_ID,
+        defender_id=defender.AGENT_ID_DEFENDER,
+    )
 
-    # Instantiation des agents
-    attacker = AttackerAgent(session_id=session_id, run_id=run_id)
-    defender = DefenderAgent(session_id=session_id, run_id=run_id)
+    report = DemoReport(session_id=ctx.session_id, run_id=ctx.run_id)
 
-    # ── S0 — Initialisation ───────────────────────────────────────────────────
+    # Vérifier que 4 instances distinctes sont créées
+    agent_ids = {ctx.orchestrator_id, ctx.attacker_id, ctx.propagator_id, ctx.defender_id}
+    s0_ok = len(agent_ids) == 4  # exactement 4 identifiants distincts
     report.steps.append(StepResult(
         step_id="S0",
-        description="Initialisation de la session et des 4 rôles",
-        status="PASS",
+        description="Initialisation — 4 agents distincts instanciés",
+        status="PASS" if s0_ok else "FAIL",
         details={
-            "session_id": session_id,
-            "run_id": run_id,
-            "agent_attacker": AttackerAgent.AGENT_ID,
-            "agent_propagator": DefenderAgent.AGENT_ID_PROPAGATOR,
-            "agent_defender": DefenderAgent.AGENT_ID_DEFENDER,
-            "agent_orchestrator": "agent:orchestrator-a",
+            "agent_orchestrator": ctx.orchestrator_id,
+            "agent_attacker": ctx.attacker_id,
+            "agent_propagator": ctx.propagator_id,
+            "agent_defender": ctx.defender_id,
+            "distinct_ids": len(agent_ids),
+            "session_id": ctx.session_id,
+            "run_id": ctx.run_id,
         },
     ))
 
-    # ── S1 — Injection ────────────────────────────────────────────────────────
+    # ── S1 — Injection (Agent B) ─────────────────────────────────────────────
     injection = attacker.craft_injection_payload(context="process user document")
-    report.injection = injection
-
-    s1_ok = bool(injection.payload_id) and bool(injection.content_hash) and (
-        injection.marker in injection.content
+    s1_ok = (
+        bool(injection.payload_id)
+        and bool(injection.content_hash)
+        and injection.marker in injection.content
+        and "process user document" in injection.content  # contexte bien interpolé
     )
     report.steps.append(StepResult(
         step_id="S1",
-        description="Injection d'un payload hostile inerte",
+        description="Injection d'un payload hostile inerte (Agent B)",
         status="PASS" if s1_ok else "FAIL",
         details={
             "payload_id": injection.payload_id,
             "content_hash": injection.content_hash[:16] + "…",
             "marker_detected": injection.marker in injection.content,
+            "context_interpolated": "process user document" in injection.content,
             "agent_source": injection.agent_source,
         },
     ))
 
-    # ── S2 — Propagation ─────────────────────────────────────────────────────
-    propagation = defender.record_propagation(
+    # ── S2 — Propagation B → C → D ───────────────────────────────────────────
+    # Agent C reçoit le payload de B et le relaye vers D
+    relay = propagator.relay_payload(
         injection,
         from_agent=attacker.AGENT_ID,
+        to_agent=defender.AGENT_ID_DEFENDER,
     )
-    report.propagation = propagation
-
     s2_ok = (
-        propagation.payload_id == injection.payload_id
-        and propagation.payload_content_hash == injection.content_hash
-        and propagation.from_agent == attacker.AGENT_ID
-        and propagation.to_agent == DefenderAgent.AGENT_ID_DEFENDER
+        relay.payload_id == injection.payload_id
+        and relay.payload_content_hash == injection.content_hash
+        and relay.from_agent == attacker.AGENT_ID
+        and relay.to_agent == defender.AGENT_ID_DEFENDER
+        and relay.via_agent == propagator.AGENT_ID
+        # Les 3 agents impliqués ont des identifiants distincts
+        and len({relay.from_agent, relay.via_agent, relay.to_agent}) == 3
     )
     report.steps.append(StepResult(
         step_id="S2",
-        description="Propagation Agent B → Agent D",
+        description="Propagation B → C → D avec lien causal et 3 agents distincts",
         status="PASS" if s2_ok else "FAIL",
         details={
-            "propagation_id": propagation.propagation_id,
-            "from_agent": propagation.from_agent,
-            "to_agent": propagation.to_agent,
-            "causal_link": propagation.payload_id == injection.payload_id,
-            "hash_preserved": propagation.payload_content_hash == injection.content_hash,
+            "propagation_id": relay.propagation_id,
+            "from_agent": relay.from_agent,
+            "via_agent": relay.via_agent,
+            "to_agent": relay.to_agent,
+            "causal_link": relay.payload_id == injection.payload_id,
+            "hash_preserved": relay.payload_content_hash == injection.content_hash,
+            "distinct_agents_in_chain": len({relay.from_agent, relay.via_agent, relay.to_agent}),
         },
     ))
 
-    # ── S3 — Tentative d'exfiltration (exécuteur factice) ────────────────────
+    # ── S3 — Tentative d'exfiltration (avant décision) ───────────────────────
     exfil_call = attacker.craft_exfiltration_call(
         "wallet.sign",
         parent_payload_id=injection.payload_id,
     )
-
-    # S3 vérifie que l'exécuteur est bien en attente (compteur avant = 0)
     s3_ok = defender.executor_call_count == 0
     report.steps.append(StepResult(
         step_id="S3",
@@ -210,29 +223,32 @@ def run_demo_scenario() -> DemoReport:
     s4_ok = (
         blocking.decision == GuardianDecision.BLOCK
         and bool(blocking.evidence_id)
+        and blocking.evidence_id.startswith("evidence:")   # UUID distinct
+        and blocking.guardian_event_id in defender.get_evidence_registry().values()
         and not blocking.tool_was_executed
         and blocking.is_valid()
     )
     report.steps.append(StepResult(
         step_id="S4",
-        description="Blocage Guardian — BLOCK + EvidenceId, outil non exécuté",
+        description="Blocage Guardian — BLOCK + EvidenceId UUID distinct, outil non exécuté",
         status="PASS" if s4_ok else "FAIL",
         details={
             "decision": blocking.decision.value,
-            "evidence_id": blocking.evidence_id[:16] + "…" if blocking.evidence_id else "ABSENT",
-            "guardian_event_id": blocking.guardian_event_id[:16] + "…",
+            "evidence_id": blocking.evidence_id,
+            "evidence_format_ok": blocking.evidence_id.startswith("evidence:"),
+            "linked_to_event": blocking.guardian_event_id in defender.get_evidence_registry().values(),
             "tool_was_executed": blocking.tool_was_executed,
             "is_valid": blocking.is_valid(),
         },
     ))
 
-    # ── S5 — Replay R0 (chaîne intacte) ──────────────────────────────────────
+    # ── S5 — Replay R0 (chaîne intacte + séquences monotones) ────────────────
     replay_r0 = defender.verify_chain_r0()
     report.replay_r0_intact = replay_r0
 
     report.steps.append(StepResult(
         step_id="S5",
-        description="Replay R0 — intégrité de la chaîne intacte",
+        description="Replay R0 — hashes individuels + sequence_no monotone",
         status="PASS" if replay_r0.is_pass() else "FAIL",
         details={
             "level": replay_r0.level,
@@ -242,13 +258,13 @@ def run_demo_scenario() -> DemoReport:
         },
     ))
 
-    # ── S6 — Replay R1 (cohérence BLOCK→EvidenceId) ───────────────────────────
+    # ── S6 — Replay R1 (EvidenceId canonique lié au BLOCK) ───────────────────
     replay_r1 = defender.verify_decisions_r1()
     report.replay_r1_intact = replay_r1
 
     report.steps.append(StepResult(
         step_id="S6",
-        description="Replay R1 — cohérence BLOCK→EvidenceId",
+        description="Replay R1 — EvidenceId UUID distinct lié à chaque BLOCK",
         status="PASS" if replay_r1.is_pass() else "FAIL",
         details={
             "level": replay_r1.level,
@@ -258,28 +274,28 @@ def run_demo_scenario() -> DemoReport:
         },
     ))
 
-    # ── S7 — Test d'altération (R0 FAIL sur copie altérée) ───────────────────
-    # Copier les événements et altérer le hash d'un événement
+    # ── S7 — Test d'altération ────────────────────────────────────────────────
+    # Copier les événements et altérer le hash du premier
     original_events = defender.get_all_events()
     tampered_events = copy.deepcopy(original_events)
     if tampered_events:
-        # Altérer le hash stocké du premier événement
-        event_obj, original_hash = tampered_events[0]
+        event_obj, _ = tampered_events[0]
         tampered_events[0] = (event_obj, "a" * 64)  # hash invalide
 
     replay_r0_tampered = defender.verify_chain_r0_on_tampered(tampered_events)
     report.replay_r0_tampered = replay_r0_tampered
 
-    # S7 PASS seulement si le replay détecte la divergence (FAIL attendu)
+    # S7 PASS = la détection fonctionne (le rejeu altéré doit retourner FAIL)
     s7_ok = not replay_r0_tampered.is_pass() and len(replay_r0_tampered.mismatches) > 0
     report.steps.append(StepResult(
         step_id="S7",
-        description="Test d'altération — R0 FAIL détecté sur copie modifiée",
+        description="Détection d'altération : R0 FAIL sur copie — archive originale intacte",
         status="PASS" if s7_ok else "FAIL",
         details={
+            "detection_verdict": "PASS" if s7_ok else "FAIL",
             "tampered_replay_verdict": replay_r0_tampered.verdict,
             "divergences_detected": len(replay_r0_tampered.mismatches),
-            "original_archive_unchanged": True,  # archive originale intacte
+            "original_archive_unchanged": True,
         },
     ))
 
@@ -296,7 +312,7 @@ def run_demo_scenario() -> DemoReport:
             "go_verdict": report.is_go(),
             "limits": [
                 "Preuve en mémoire — persistance durable Rust non utilisée dans cette démo",
-                "Agents simulés dans le même processus (pas de processus séparés)",
+                "Agents dans le même processus Python (pas de processus séparés)",
                 "Replay R0/R1 uniquement — R2/R3 non implémentés",
                 "API ARTCB OVH hors ligne — démo entièrement locale",
             ],
