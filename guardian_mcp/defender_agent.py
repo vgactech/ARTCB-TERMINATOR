@@ -173,15 +173,18 @@ class DefenderAgent:
     # ------------------------------------------------------------------
 
     def verify_chain_r0(self) -> ReplayResult:
-        """Replay R0 — vérifie l'intégrité des hashes ET le chaînage.
+        """Replay R0 — vérifie les hashes individuels et la monotonie des séquences.
 
-        R021-002 : en plus de recalculer chaque hash individuel, vérifie :
-        - la monotonie stricte des sequence_no (1, 2, 3, ...)
-        - que deux événements consécutifs sont liés (hash du précédent connu)
+        R021-002 : deux contrôles effectués :
+        1. Recalcul du hash SHA-256 de chaque événement et comparaison au hash stocké.
+        2. Vérification que sequence_no augmente strictement (1, 2, 3, …).
 
-        Limite : le chaînage vérifié ici est entre les hashes individuels
-        des événements en mémoire. Il ne couvre pas la persistance durable
-        ni la résistance à la suppression sans checkpoint indépendant.
+        Ces contrôles détectent la modification du contenu d'un événement
+        et un réordonnancement si les sequence_no ne sont pas recalculés avec lui.
+        Ils ne vérifient pas de lien parent-hash entre événements successifs
+        (R023-002 — non implémenté) : un réordonnancement d'événements non altérés
+        ne serait pas détecté par les hashes individuels.
+        Voir R021-005 pour la persistance durable et R023-002 pour le parent-hash.
         """
         events = self._instrumentation.get_events()
         mismatches = []

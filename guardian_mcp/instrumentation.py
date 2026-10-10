@@ -229,11 +229,13 @@ class GuardianMCPInstrumentation:
                 result = executor(params)
                 output_summary = _summarize_output(result)
             except Exception as exc:  # noqa: BLE001
-                logger.error("Erreur outil %s : %s", tool_name, exc)
+                # R026-001 : ne pas exposer str(exc) — peut contenir des données sensibles.
+                # Seul le type d'exception est journalisé ; la réponse externe est générique.
+                logger.error("Erreur outil %s : type=%s", tool_name, type(exc).__name__)
                 output_summary = f"ERROR:{type(exc).__name__}"
                 result = {
                     "isError": True,
-                    "content": [{"type": "text", "text": str(exc)}],
+                    "content": [{"type": "text", "text": f"[GUARDIAN] Tool execution error (ref: {tool_name})"}],
                 }
 
         elif decision == GuardianDecision.REDACT:
@@ -243,7 +245,8 @@ class GuardianMCPInstrumentation:
                 result = _redact_output(raw)
                 output_summary = "REDACTED"
             except Exception as exc:  # noqa: BLE001
-                logger.error("Erreur outil %s (REDACT) : %s", tool_name, exc)
+                # R026-001 : même protection que ALLOW — pas de str(exc) exposé.
+                logger.error("Erreur outil %s (REDACT) : type=%s", tool_name, type(exc).__name__)
                 result = {
                     "isError": True,
                     "content": [{"type": "text", "text": "[REDACTED]"}],

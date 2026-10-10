@@ -212,3 +212,98 @@ def test_custom_event_sink():
     )
     assert len(received) == 1
     assert received[0][0].tool_name == "blockchain.query"
+
+# ─── R026-001 — Fuite indirecte via exception ─────────────────────────────────
+# Ces tests vérifient qu'une exception contenant une sentinelle secrète
+# n'est pas transmise en clair dans les journaux ni dans les réponses externes.
+
+
+def test_r026_allow_exception_sentinel_absent_from_response():
+    """ALLOW — une exception contenant une sentinelle ne la divulgue pas en clair
+    dans le champ de texte de la réponse MCP externe."""
+    instr = make_instr()
+    SECRET_SENTINEL = "SECRET_CANARY_VALUE_42"
+
+    def executor_raises_with_secret(params):
+        raise RuntimeError(f"internal error: {SECRET_SENTINEL} in context")
+
+    result = instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=executor_raises_with_secret,
+    )
+
+    assert result.get("isError") is True
+    # Le texte de la réponse externe ne doit pas exposer la sentinelle
+    response_text = " ".join(
+        item.get("text", "")
+        for item in result.get("content", [])
+        if isinstance(item, dict)
+    )
+    assert SECRET_SENTINEL not in response_text, (
+        f"La sentinelle '{SECRET_SENTINEL}' ne doit pas apparaître dans la réponse MCP externe"
+    )
+
+
+def test_r026_allow_exception_sentinel_not_in_output_summary():
+    """ALLOW — le output_summary de l'événement ne doit pas contenir la sentinelle."""
+    instr = make_instr()
+    SECRET_SENTINEL = "SECRET_CANARY_VALUE_42"
+
+    def executor_raises_with_secret(params):
+        raise RuntimeError(f"internal error: {SECRET_SENTINEL} in context")
+
+    instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=executor_raises_with_secret,
+    )
+
+    event, _ = instr.get_events()[-1]
+    assert SECRET_SENTINEL not in event.output_summary, (
+        f"La sentinelle '{SECRET_SENTINEL}' ne doit pas apparaître dans output_summary"
+    )
+
+
+def test_r026_redact_exception_sentinel_absent_from_response():
+    """REDACT — une exception lève une réponse [REDACTED], pas le texte de l'exception."""
+    instr = make_instr()
+    SECRET_SENTINEL = "SECRET_CANARY_VALUE_42"
+
+    def executor_raises_with_secret(params):
+        raise RuntimeError(f"internal error: {SECRET_SENTINEL} in context")
+
+    result = instr.handle_tool_call(
+        {"name": "data.export", "arguments": {}},   # outil REDACT selon la politique
+        executor=executor_raises_with_secret,
+    )
+
+    # Que l'outil soit ALLOW ou REDACT, la sentinelle ne doit pas être dans la réponse
+    response_text = " ".join(
+        item.get("text", "")
+        for item in result.get("content", [])
+        if isinstance(item, dict)
+    )
+    assert SECRET_SENTINEL not in response_text, (
+        f"La sentinelle '{SECRET_SENTINEL}' ne doit pas apparaître dans la réponse MCP (REDACT/ALLOW)"
+    )
+
+
+def test_r026_block_executor_never_receives_arguments():
+    """BLOCK — les arguments sensibles ne sont jamais transmis à l'exécuteur."""
+    instr = make_instr()
+    SECRET_SENTINEL = "SECRET_CANARY_VALUE_42"
+    executor_received = []
+
+    def sentinel_executor(params):
+        executor_received.append(params)
+        return {"isError": False, "content": []}
+
+    instr.handle_tool_call(
+        {"name": "wallet.sign", "arguments": {"data": SECRET_SENTINEL}},
+        executor=sentinel_executor,
+    )
+
+    # L'exécuteur ne doit pas avoir été appelé du tout
+    assert len(executor_received) == 0, (
+        "L'exécuteur ne doit jamais être appelé pour un outil BLOCK"
+    )
+

