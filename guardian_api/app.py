@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
@@ -22,9 +25,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# GUARDIAN_FRONTEND_ORIGIN: set in Doppler aws/dev for AWS deployment
+_extra_origin = os.environ.get("GUARDIAN_FRONTEND_ORIGIN", "")
+_allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+if _extra_origin:
+    _allowed_origins.append(_extra_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
@@ -100,6 +112,130 @@ def health() -> dict[str, str]:
 @app.post("/api/simulation/run")
 def run_simulation() -> dict[str, Any]:
     return serialize_report(run_demo_scenario())
+
+
+@app.post("/api/llm-attack/run")
+def run_llm_attack() -> dict[str, Any]:
+    """Live LLM attacker vs Guardian defender.
+
+    An OpenAI LLM (gpt-4o) generates a real adversarial tool call.
+    Guardian intercepts it before execution and produces cryptographic evidence.
+    The LLM has no knowledge of the policy — it attacks blindly each run.
+
+    Requires env vars (Doppler aws/dev):
+      GUARDIAN_ATTACKER_ENABLED=true
+      OPENAI_API_KEY=sk-proj-...
+      GUARDIAN_LLM_MODEL=gpt-4o  (optional, default gpt-4o)
+    """
+    if os.environ.get("GUARDIAN_ATTACKER_ENABLED", "false").lower() != "true":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM attacker not enabled. "
+                "Set GUARDIAN_ATTACKER_ENABLED=true in Doppler aws/dev."
+            ),
+        )
+
+    from guardian_mcp.llm_attacker import LLMAttacker
+    from guardian_mcp.attacker_agent import AgentRequest
+
+    # ── Instantiate all four agents ──────────────────────────────────────────
+    orchestrator = OrchestratorAgent()
+    llm_attacker = LLMAttacker(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
+    propagator = PropagatorAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
+    defender = DefenderAgent(
+        session_id=orchestrator.session_id,
+        run_id=orchestrator.run_id,
+    )
+    context = orchestrator.open_session(
+        attacker_id=llm_attacker.AGENT_ID,
+        propagator_id=propagator.AGENT_ID,
+        defender_id=defender.AGENT_ID_DEFENDER,
+    )
+
+    # ── LLM generates a live attack call ────────────────────────────────────
+    llm_result = llm_attacker.generate_attack()
+
+    # ── Build a traceable AgentRequest from the LLM output ──────────────────
+    request = AgentRequest(
+        request_id=llm_result["request_id"],
+        tool_name=llm_result["tool_name"],
+        arguments=llm_result["arguments"],
+        content_hash=llm_result["content_hash"],
+        agent_source=llm_attacker.AGENT_ID,
+        session_id=context.session_id,
+        run_id=context.run_id,
+    )
+
+    # ── Propagator relays with full traceability ─────────────────────────────
+    propagation = propagator.relay_request(
+        request,
+        from_agent=llm_attacker.AGENT_ID,
+        to_agent=defender.AGENT_ID_DEFENDER,
+    )
+
+    # ── Guardian evaluates — executor never called for BLOCK ─────────────────
+    policy_result = defender.evaluate_request(request)
+    events = defender.get_all_events()
+
+    # ── R0 chain verification ────────────────────────────────────────────────
+    previous_hash = GENESIS_HASH
+    chain_valid = True
+    serialized_events: list[dict[str, Any]] = []
+    for event, stored_hash in events:
+        hash_ok = event.compute_hash() == stored_hash
+        parent_ok = event.previous_event_hash == previous_hash
+        chain_valid = chain_valid and hash_ok and parent_ok
+        serialized_events.append({
+            **_to_json_value(event),
+            "event_hash": stored_hash,
+            "hash_valid": hash_ok,
+            "parent_valid": parent_ok,
+        })
+        previous_hash = stored_hash
+
+    return {
+        "mode": "llm-vs-guardian",
+        "attacker": {
+            "model": llm_result["model"],
+            "agent_id": llm_attacker.AGENT_ID,
+            "tool_chosen": llm_result["tool_name"],
+            "arguments": llm_result["arguments"],
+            "reasoning": llm_result["llm_reasoning"],
+            "request_id": llm_result["request_id"],
+        },
+        "guardian": {
+            "decision": policy_result.decision.value,
+            "reason": policy_result.reason,
+            "execution_status": policy_result.execution_status,
+            "tool_was_executed": policy_result.tool_was_executed,
+            "evidence_id": policy_result.evidence_id or None,
+            "guardian_event_id": policy_result.guardian_event_id,
+            "intent_id": policy_result.intent_id,
+        },
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "agents": [
+            {"id": context.orchestrator_id, "role": "orchestrator"},
+            {"id": llm_attacker.AGENT_ID,   "role": "llm-attacker"},
+            {"id": context.propagator_id,   "role": "propagator"},
+            {"id": context.defender_id,     "role": "defender"},
+        ],
+        "propagation": _to_json_value(propagation),
+        "chain_verification": {
+            "level": "R0",
+            "verdict": "PASS" if chain_valid else "FAIL",
+            "events_replayed": len(events),
+            "mismatches": [] if chain_valid else ["hash or parent link mismatch"],
+        },
+        "events": serialized_events,
+    }
 
 
 @app.get("/api/scenarios")
