@@ -97,9 +97,9 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-3 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-labelledby="execution-graph-heading">
-      <section className="flex h-[min(78vh,720px)] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-cyan-400/25 bg-[#050a12] shadow-2xl shadow-cyan-950/40">
-        <header className="flex items-center justify-between border-b border-white/8 px-5 py-4">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-3 backdrop-blur-[2px] sm:p-6" role="dialog" aria-modal="true" aria-labelledby="execution-graph-heading">
+      <section className="flex h-[min(78vh,720px)] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-cyan-400/25 bg-[#050a12]/78 shadow-2xl shadow-cyan-950/40 backdrop-blur-xl">
+        <header className="flex items-center justify-between border-b border-white/8 bg-[#050a12]/55 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="flex size-9 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300"><Network size={19} /></div>
             <div><h2 id="execution-graph-heading" className="text-sm font-semibold text-white">Four-agent execution graph</h2><p className="mt-0.5 text-xs text-slate-500">Built progressively from the backend orchestration trace</p></div>
@@ -112,7 +112,7 @@ export function ExecutionGraphOverlay({ open, result, activeAgent, onClose }: Ex
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 px-5 py-3 text-[10px] text-slate-500">
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 bg-[#050a12]/45 px-5 py-3 text-[10px] text-slate-500">
           <span>{result ? `${result.distinct_agent_count} distinct backend instances verified` : 'Guardian is executing the selected scenario'}</span>
           {result && <span className="font-mono text-cyan-300">REQUEST HASH {result.request.content_hash.slice(0, 16)}…</span>}
         </footer>
