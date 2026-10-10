@@ -191,20 +191,33 @@ class GuardianMCPInstrumentation:
         session_id: str | None = None,
         run_id: str | None = None,
         event_sink: Callable[[MCPToolEvent, str], None] | None = None,
+        initial_seq: int = 0,
+        initial_prev_hash: str | None = None,
     ) -> None:
         """
         Args:
-            agent_id:    Identifiant de l'agent MCP (ex: "agent:mcp-server").
-            session_id:  Identifiant de session (généré si absent).
-            run_id:      Identifiant de run (généré si absent).
-            event_sink:  Fonction appelée avec (event, event_hash) pour chaque
-                         événement. Par défaut : log + stockage en mémoire.
+            agent_id:          Identifiant de l'agent MCP (ex: "agent:mcp-server").
+            session_id:        Identifiant de session (généré si absent).
+            run_id:            Identifiant de run (généré si absent).
+            event_sink:        Fonction appelée avec (event, event_hash) pour chaque
+                               événement. Par défaut : log + stockage en mémoire.
+            initial_seq:       R028-B — numéro de séquence de reprise (issu de
+                               recover_state_from_jsonl). 0 pour une nouvelle session.
+            initial_prev_hash: R028-B — hash du dernier événement connu (issu de
+                               recover_state_from_jsonl). GENESIS_HASH si absent.
         """
         self.agent_id = agent_id
         self.session_id = session_id or f"session:{uuid.uuid4()}"
         self.run_id = run_id or f"run:{uuid.uuid4()}"
-        self._seq: int = 0
-        self._events: list[tuple[MCPToolEvent, str]] = []
+        self._seq: int = initial_seq
+        # R028-B : si on reprend un journal existant, initialiser _events avec
+        # un sentinel pour que prev_hash soit correct dès le premier appel.
+        if initial_prev_hash and initial_prev_hash != GENESIS_HASH:
+            self._events: list[tuple[MCPToolEvent, str]] = [
+                (None, initial_prev_hash)  # type: ignore[list-item]
+            ]
+        else:
+            self._events = []
         self._event_sink = event_sink or self._default_sink
 
     # ------------------------------------------------------------------
@@ -324,12 +337,12 @@ class GuardianMCPInstrumentation:
     # ------------------------------------------------------------------
 
     def event_count(self) -> int:
-        """Nombre d'événements enregistrés dans cette session."""
-        return len(self._events)
+        """Nombre d'événements enregistrés dans cette session (hors sentinel de reprise)."""
+        return sum(1 for e, _ in self._events if e is not None)
 
     def get_events(self) -> list[tuple[MCPToolEvent, str]]:
-        """Retourne tous les événements (event, hash) de la session."""
-        return list(self._events)
+        """Retourne tous les événements (event, hash) de la session (hors sentinel de reprise)."""
+        return [(e, h) for e, h in self._events if e is not None]
 
     def last_event_hash(self) -> str | None:
         """Hash du dernier événement enregistré."""
@@ -406,8 +419,12 @@ def make_file_sink(path: str | Path) -> Callable[[MCPToolEvent, str], None]:
     - previous_event_hash (R023-002)
 
     Le fichier peut être rechargé et vérifié via load_and_verify_jsonl().
+    Pour reprendre l'écriture dans un fichier existant après redémarrage,
+    utiliser recover_state_from_jsonl() pour initialiser l'instrumentation
+    avec le bon seq de départ et le bon previous_event_hash (R028-B).
 
     R021-005 : la durabilité est garantie par os.fsync() après chaque écriture.
+    R028-C : gap entre exécution et écriture documenté dans load_and_verify_jsonl().
     """
     jsonl_path = Path(path)
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
@@ -453,7 +470,12 @@ class ChainVerificationResult:
         return self.verdict == "PASS"
 
 
-def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
+def load_and_verify_jsonl(
+    path: str | Path,
+    *,
+    expected_count: int | None = None,
+    expected_last_hash: str | None = None,
+) -> ChainVerificationResult:
     """Charge et vérifie un fichier JSONL Guardian après redémarrage.
 
     R021-005 : démontre la persistance — les événements sont relus depuis le disque.
@@ -464,10 +486,11 @@ def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
     2. Vérification que previous_event_hash de chaque entrée correspond
        au event_hash de l'entrée précédente (chaînage cryptographique).
     3. Vérification de la monotonie des sequence_no.
+    4. (R028-A) Si expected_count est fourni, FAIL si le nombre d'entrées ne correspond pas.
+    5. (R028-A) Si expected_last_hash est fourni, FAIL si le dernier hash ne correspond pas.
 
     Limites :
-    - Ne vérifie pas la troncature de fin (dernier hash attendu inconnu
-      sans point d'ancrage externe).
+    - Sans expected_count/expected_last_hash, la troncature finale n'est pas détectable.
     - Ne recrée pas les objets MCPToolEvent complets — utilise les champs
       bruts du JSON pour recalculer le hash.
     """
@@ -495,6 +518,20 @@ def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
                     mismatches=[{"error": f"JSON invalide ligne {lineno} : {type(e).__name__}"}],
                     limits=[],
                 )
+
+    # R028-A : un journal vide (ou vidé) alors qu'un count est attendu → FAIL
+    if expected_count is not None and len(entries) != expected_count:
+        return ChainVerificationResult(
+            entries_verified=len(entries),
+            verdict="FAIL",
+            mismatches=[{
+                "error": f"Nombre d'entrées attendu : {expected_count}, trouvé : {len(entries)}",
+                "field": "entries_count",
+            }],
+            limits=[
+                "R028-A : journal vide ou tronqué détecté via expected_count",
+            ],
+        )
 
     mismatches: list[dict] = []
     prev_hash = GENESIS_HASH
@@ -556,6 +593,15 @@ def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
         prev_hash = stored_hash  # avancer avec le hash stocké pour suivre la chaîne
         prev_seq = seq
 
+    # R028-A : vérification du dernier hash si un ancrage externe est fourni
+    if expected_last_hash is not None and entries:
+        actual_last = entries[-1].get("event_hash", "")
+        if actual_last != expected_last_hash:
+            mismatches.append({
+                "error": f"Dernier hash attendu : {expected_last_hash[:16]}…, trouvé : {actual_last[:16]}…",
+                "field": "last_event_hash",
+            })
+
     verdict = "PASS" if not mismatches else "FAIL"
     return ChainVerificationResult(
         entries_verified=len(entries),
@@ -564,6 +610,46 @@ def load_and_verify_jsonl(path: str | Path) -> ChainVerificationResult:
         limits=[
             "R021-005 : persistance JSONL avec fsync — durabilité démontrée après rechargement",
             "R023-002 : chaînage previous_event_hash vérifié entre événements successifs",
-            "Limite : troncature de fin non détectable sans point d'ancrage externe du dernier hash attendu",
+            "R028-A : troncature détectable si expected_count ou expected_last_hash est fourni",
+            "Limite : sans ancrage externe, la troncature finale reste non détectable",
+            "R028-C : fsync garantit la durabilité d'une écriture effectuée — "
+            "un crash entre exécution et écriture laisse un gap non enregistré",
         ],
     )
+
+
+def recover_state_from_jsonl(path: str | Path) -> tuple[int, str]:
+    """Relit un fichier JSONL existant pour récupérer (sequence_no, last_hash).
+
+    R028-B : permet à une nouvelle instance d'instrumentation de reprendre
+    l'écriture dans un fichier existant sans rompre la chaîne ni répéter
+    les numéros de séquence.
+
+    Retourne (0, GENESIS_HASH) si le fichier n'existe pas ou est vide.
+    Lève ValueError si le fichier contient des entrées mais est corrompu.
+    """
+    jsonl_path = Path(path)
+    if not jsonl_path.exists():
+        return 0, GENESIS_HASH
+
+    last_seq = 0
+    last_hash = GENESIS_HASH
+
+    with open(jsonl_path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Fichier JSONL corrompu ligne {lineno} : {type(e).__name__}"
+                ) from e
+            seq = record.get("sequence_no", 0)
+            h = record.get("event_hash", "")
+            if seq > 0 and h:
+                last_seq = seq
+                last_hash = h
+
+    return last_seq, last_hash

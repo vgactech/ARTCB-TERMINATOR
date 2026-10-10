@@ -425,3 +425,128 @@ def test_r023_002_reordering_detected(tmp_path):
     result = load_and_verify_jsonl(ledger)
     assert not result.is_pass(), "Le réordonnancement doit être détecté"
 
+
+# ─── R028-A/B/C — Anomalies du contre-audit R028 ─────────────────────────────
+
+
+def test_r028_a_empty_journal_with_expected_count_fails(tmp_path):
+    """R028-A : un journal vide déclaré avec expected_count > 0 retourne FAIL."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "empty_test.jsonl"
+    sink = make_file_sink(ledger)
+
+    # Écrire 3 événements
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Vider intégralement le journal (simule une suppression/troncature totale)
+    ledger.write_text("")
+
+    result = load_and_verify_jsonl(ledger, expected_count=3)
+    assert not result.is_pass(), "Journal vidé doit être détecté quand expected_count est fourni"
+    assert any("entries_count" in m.get("field", "") for m in result.mismatches)
+
+
+def test_r028_a_expected_last_hash_mismatch_fails(tmp_path):
+    """R028-A : un dernier hash différent de l'attendu retourne FAIL."""
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "last_hash_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Récupérer le vrai dernier hash
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    real_last_hash = lines[-1]["event_hash"]
+
+    # Vérification avec le bon hash → PASS
+    result_ok = load_and_verify_jsonl(ledger, expected_last_hash=real_last_hash)
+    assert result_ok.is_pass(), f"Le bon hash doit passer : {result_ok.mismatches}"
+
+    # Vérification avec un hash falsifié → FAIL
+    result_fail = load_and_verify_jsonl(ledger, expected_last_hash="b" * 64)
+    assert not result_fail.is_pass(), "Un hash incorrect doit être détecté"
+    assert any(m.get("field") == "last_event_hash" for m in result_fail.mismatches)
+
+
+def test_r028_b_resume_from_existing_journal(tmp_path):
+    """R028-B : une nouvelle instance peut reprendre l'écriture dans un fichier
+    existant sans rompre la chaîne ni répéter les numéros de séquence."""
+    from guardian_mcp.instrumentation import (
+        load_and_verify_jsonl, make_file_sink, recover_state_from_jsonl,
+    )
+
+    ledger = tmp_path / "resume_test.jsonl"
+
+    # Session 1 — écrire 2 événements
+    sink1 = make_file_sink(ledger)
+    instr1 = make_instr(event_sink=sink1)
+    instr1.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr1.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Récupérer l'état depuis le journal (simule le redémarrage)
+    last_seq, last_hash = recover_state_from_jsonl(ledger)
+    assert last_seq == 2
+    assert last_hash != "0" * 64, "Le hash récupéré ne doit pas être le genesis"
+
+    # Session 2 — reprendre avec l'état récupéré
+    sink2 = make_file_sink(ledger)
+    instr2 = make_instr(
+        event_sink=sink2,
+        initial_seq=last_seq,
+        initial_prev_hash=last_hash,
+    )
+    instr2.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr2.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+    # Le journal contient maintenant 4 événements
+    result = load_and_verify_jsonl(ledger, expected_count=4)
+    assert result.is_pass(), f"La chaîne après reprise doit être valide : {result.mismatches}"
+    assert result.entries_verified == 4
+
+    # Les sequence_no de la session 2 doivent continuer (3, 4) et non recommencer (1, 2)
+    import json as _json
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    seqs = [l["sequence_no"] for l in lines]
+    assert seqs == [1, 2, 3, 4], f"Les séquences doivent être continues : {seqs}"
+
+
+def test_r028_b_recover_state_empty_file(tmp_path):
+    """R028-B : recover_state_from_jsonl sur un fichier vide retourne (0, GENESIS_HASH)."""
+    from guardian_mcp.instrumentation import GENESIS_HASH, recover_state_from_jsonl
+    ledger = tmp_path / "empty.jsonl"
+    ledger.write_text("")
+    seq, h = recover_state_from_jsonl(ledger)
+    assert seq == 0
+    assert h == GENESIS_HASH
+
+
+def test_r028_b_recover_state_nonexistent(tmp_path):
+    """R028-B : recover_state_from_jsonl sur un fichier inexistant retourne (0, GENESIS_HASH)."""
+    from guardian_mcp.instrumentation import GENESIS_HASH, recover_state_from_jsonl
+    seq, h = recover_state_from_jsonl(tmp_path / "ghost.jsonl")
+    assert seq == 0
+    assert h == GENESIS_HASH
+
+
+def test_r028_c_gap_documented_in_limits(tmp_path):
+    """R028-C : la limite sur le gap exécution/écriture est documentée dans les résultats."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "limits_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+    result = load_and_verify_jsonl(ledger)
+    assert result.is_pass()
+    # La limite R028-C doit être documentée
+    assert any("R028-C" in l for l in result.limits), \
+        "La limite gap exécution/écriture doit être documentée dans les limites"
+
