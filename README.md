@@ -8,6 +8,8 @@ Dépôt de rapports et de code de sécurité Guardian pour le projet ARTCB.
 rapports/           Rapports R001–R013 + prompts
 guardian_core/      C-01 à C-08 — Rust Security Core (+ binding PyO3)
 guardian_mcp/       C-07 — Instrumentation MCP Python
+guardian_api/       FastAPI bridge for the Guardian web console
+frontend/           React + TypeScript Guardian dashboard
 ```
 
 ## Composants
@@ -35,4 +37,33 @@ cargo test          # 27 tests Rust
 
 cd ../guardian_mcp
 python3 -m pytest test_instrumentation.py -v   # 17 tests Python
+```
+
+## Run the integrated console
+
+Use two PowerShell windows from the repository root.
+
+Backend:
+
+```powershell
+python -m pip install -r guardian_api\requirements.txt
+python -m uvicorn guardian_api.app:app --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```powershell
+cd frontend
+npm install
+npm.cmd run dev
+```
+
+Open `http://localhost:5173`. The dashboard checks backend health, loads four
+policy scenarios, and shows the real Guardian decision, events, evidence, replay,
+and tamper-verification result for every run.
+
+Run the Python and API tests with:
+
+```powershell
+python -m pytest guardian_api guardian_mcp -q
 ```

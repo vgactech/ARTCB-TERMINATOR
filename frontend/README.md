@@ -5,21 +5,30 @@ Interactive security-operations dashboard for demonstrating how Guardian detects
 ## What the demo shows
 
 - A four-agent path: Orchestrator, Attacker, Propagator, and Defender
-- An animated attack simulation ending in a blocked tool action
-- Policy, execution, evidence, and final-protection verdicts
+- Four selectable backend scenarios covering ALLOW, BLOCK, and ESCALATE
+- Policy, execution, evidence, and chain-verification verdicts from Guardian
 - Unique evidence, session, and run identifiers
-- A nine-stage forensic event timeline
-- R0/R1 replay verification and a deliberately failed tamper replay
+- The real INTENT and TERMINAL event records created by each request
+- R0 chain verification and a deliberately failed tamper replay
 - Responsive, keyboard-accessible UI with reduced-motion support
 
 ## Run locally
 
 Requirements: Node.js 20 or newer and npm.
 
+Start the backend from the repository root in the first PowerShell window:
+
+```powershell
+python -m pip install -r guardian_api\requirements.txt
+python -m uvicorn guardian_api.app:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend in a second PowerShell window:
+
 ```powershell
 cd frontend
 npm install
-npm run dev
+npm.cmd run dev
 ```
 
 Open the local address printed by Vite, normally `http://localhost:5173`, and select **Run attack simulation**.
@@ -45,6 +54,6 @@ The production bundle is written to `dist/` and is intentionally excluded from G
 
 ## Integration status
 
-This frontend is currently a self-contained demonstration. The simulation uses local UI state and generated browser UUIDs; it does not yet call the Rust or Python backend. Keeping that boundary explicit makes the demo safe to run while backend endpoints and response contracts are finalized.
+The dashboard calls the Python Guardian API through Vite's `/api` development proxy. Guardian performs the real policy evaluation and returns its decision, execution state, event records, evidence identifier, chain verification, and tamper-test result. The interface reports an offline error if the API is not running instead of substituting mock data.
 
-When the API contract is ready, replace the local `runSimulation` sequence in `src/App.tsx` with an API client while retaining the existing loading, success, blocked, replay, and error presentation states.
+The Rust core is a separate security implementation in this repository. The current HTTP path uses the Python MCP instrumentation; it does not load the optional Rust/PyO3 binding.
