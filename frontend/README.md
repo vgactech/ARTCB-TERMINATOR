@@ -4,7 +4,7 @@ Interactive security-operations dashboard for demonstrating how Guardian detects
 
 ## What the demo shows
 
-- A four-agent path: Orchestrator, Attacker, Propagator, and Defender
+- A real four-agent path: Orchestrator, Source/Attacker, Propagator, and Defender
 - Four selectable backend scenarios covering ALLOW, BLOCK, and ESCALATE
 - Policy, execution, evidence, and chain-verification verdicts from Guardian
 - Unique evidence, session, and run identifiers
@@ -55,5 +55,7 @@ The production bundle is written to `dist/` and is intentionally excluded from G
 ## Integration status
 
 The dashboard calls the Python Guardian API through Vite's `/api` development proxy. Guardian performs the real policy evaluation and returns its decision, execution state, event records, evidence identifier, chain verification, and tamper-test result. The interface reports an offline error if the API is not running instead of substituting mock data.
+
+Every selectable scenario creates four distinct agent instances in the backend. The Orchestrator opens a shared session, the Source constructs a hashed request, the Propagator records the causal relay, and the Defender evaluates that same request. The returned agent trace drives the dashboard visualization. These are four collaborating instances inside one Python API process, not four independently deployed network services.
 
 The Rust core is a separate security implementation in this repository. The current HTTP path uses the Python MCP instrumentation; it does not load the optional Rust/PyO3 binding.

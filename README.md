@@ -62,6 +62,12 @@ Open `http://localhost:5173`. The dashboard checks backend health, loads four
 policy scenarios, and shows the real Guardian decision, events, evidence, replay,
 and tamper-verification result for every run.
 
+Each scenario is orchestrated through four distinct backend instances in one
+Python process: Orchestrator → Source/Attacker → Propagator → Defender. The API
+returns the agent IDs, causal request/relay hashes, artifacts, and Guardian events
+that drive the frontend trace. This is intentionally an in-process multi-agent
+architecture, not four separately deployed microservices.
+
 Run the Python and API tests with:
 
 ```powershell
