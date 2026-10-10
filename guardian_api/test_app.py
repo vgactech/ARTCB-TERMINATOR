@@ -651,3 +651,261 @@ def test_stream_route_voice_scripts_not_empty(
             payload = json.loads(line[5:].strip())
             assert payload.get("text"), f"Empty voice_script text for role {payload.get('role')}"
             in_voice_script = False
+
+
+# ─── R041 — Voice speed, dual mode, isolation tests ─────────────────────────
+
+
+def test_voice_commentary_speed_default() -> None:
+    """VoiceCommentary default speed is 1.0 (from env default)."""
+    import os
+    os.environ.pop("GUARDIAN_VOICE_SPEED", None)
+    from importlib import reload
+    import guardian_mcp.voice_commentary as vc_mod
+    reload(vc_mod)
+    vc = vc_mod.VoiceCommentary()
+    assert vc.speed == 1.0
+
+
+def test_voice_commentary_speed_custom() -> None:
+    """VoiceCommentary accepts a custom speed per instance."""
+    from guardian_mcp.voice_commentary import VoiceCommentary
+    vc = VoiceCommentary(voice_speed=0.7)
+    assert vc.speed == 0.7
+
+
+def test_voice_commentary_speed_clamped_low() -> None:
+    """Speed below 0.5 is clamped by the route, not by VoiceCommentary itself."""
+    from guardian_mcp.voice_commentary import VoiceCommentary
+    vc = VoiceCommentary(voice_speed=0.1)
+    # VoiceCommentary stores what it receives; clamping is the route's responsibility
+    assert vc.speed == 0.1
+
+
+def test_voice_commentary_voice_false_disables_tts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """voice=False disables TTS even when API key is present."""
+    monkeypatch.setenv("VOICE_1_ELEVENLABS_API", "sk_test_fake_eleven")
+    from guardian_mcp.voice_commentary import VoiceCommentary
+    vc = VoiceCommentary(voice=False)
+    assert not vc.is_enabled()
+    assert vc.voice_requested() is False
+    assert vc.speak_commentator("Test.") == b""
+    assert vc.speak_agent("defender", "Blocked.") == b""
+
+
+def test_voice_commentary_voice_true_with_key_enables_tts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """voice=True with API key → is_enabled() True."""
+    monkeypatch.setenv("VOICE_1_ELEVENLABS_API", "sk_test_fake_eleven")
+    from guardian_mcp.voice_commentary import VoiceCommentary
+    vc = VoiceCommentary(voice=True)
+    assert vc.is_enabled()
+    assert vc.voice_requested() is True
+
+
+def test_stream_route_voice_false_no_audio_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """voice=false: stream emits voice_script but NO voice_audio events."""
+    import uuid as _uuid
+    monkeypatch.setenv("GUARDIAN_ATTACKER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.setenv("VOICE_1_ELEVENLABS_API", "sk_test_fake_eleven")
+
+    with patch("guardian_mcp.llm_attacker.LLMAttacker.generate_attack") as mock_gen:
+        mock_gen.return_value = {
+            "request_id": f"llm-request:{_uuid.uuid4()}",
+            "tool_name": "wallet.sign",
+            "arguments": {"destination": "x.invalid", "amount": "1"},
+            "content_hash": "a" * 64,
+            "llm_reasoning": "Attack.",
+            "model": "gpt-4o",
+            "agent_source": "agent:llm-attacker-gpt4o",
+            "session_id": "sess:test",
+            "run_id": "run:test",
+        }
+        response = client.post("/api/llm-attack/stream?voice=false")
+
+    assert response.status_code == 200
+    raw = response.text
+    event_types = [
+        line.split(":", 1)[1].strip()
+        for line in raw.splitlines()
+        if line.startswith("event:")
+    ]
+    assert "voice_audio" not in event_types, (
+        f"voice=false should produce no voice_audio events, got: {event_types}"
+    )
+    assert "voice_script" in event_types, "voice_script should still be present in voice=false mode"
+
+
+def test_stream_route_voice_true_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """voice=true (default): no voice_audio when API key absent, voice_script present."""
+    import uuid as _uuid
+    monkeypatch.setenv("GUARDIAN_ATTACKER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+
+    with patch("guardian_mcp.llm_attacker.LLMAttacker.generate_attack") as mock_gen:
+        mock_gen.return_value = {
+            "request_id": f"llm-request:{_uuid.uuid4()}",
+            "tool_name": "wallet.sign",
+            "arguments": {"destination": "x.invalid", "amount": "1"},
+            "content_hash": "b" * 64,
+            "llm_reasoning": "Attack.",
+            "model": "gpt-4o",
+            "agent_source": "agent:llm-attacker-gpt4o",
+            "session_id": "sess:test",
+            "run_id": "run:test",
+        }
+        response = client.post("/api/llm-attack/stream?voice=true&speed=1.3")
+
+    assert response.status_code == 200
+    event_types = [
+        line.split(":", 1)[1].strip()
+        for line in response.text.splitlines()
+        if line.startswith("event:")
+    ]
+    # No API key → no audio even with voice=true
+    assert "voice_audio" not in event_types
+    assert "voice_script" in event_types
+
+
+def test_stream_route_speed_clamping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Speed outside [0.5, 2.0] is clamped; stream still succeeds."""
+    import uuid as _uuid
+    monkeypatch.setenv("GUARDIAN_ATTACKER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+
+    with patch("guardian_mcp.llm_attacker.LLMAttacker.generate_attack") as mock_gen:
+        mock_gen.return_value = {
+            "request_id": f"llm-request:{_uuid.uuid4()}",
+            "tool_name": "memory.read",
+            "arguments": {"key": "x"},
+            "content_hash": "c" * 64,
+            "llm_reasoning": "Read.",
+            "model": "gpt-4o",
+            "agent_source": "agent:llm-attacker-gpt4o",
+            "session_id": "sess:test",
+            "run_id": "run:test",
+        }
+        # speed=5.0 should be clamped to 2.0 at the route level
+        response = client.post("/api/llm-attack/stream?voice=false&speed=5.0")
+
+    assert response.status_code == 200
+    # Done event must still have chain PASS
+    done_data = None
+    for i, line in enumerate(response.text.splitlines()):
+        if line == "event: done":
+            for j in range(i + 1, min(i + 5, len(response.text.splitlines()))):
+                next_line = response.text.splitlines()[j]
+                if next_line.startswith("data:"):
+                    done_data = json.loads(next_line[5:].strip())
+                    break
+            break
+    assert done_data is not None
+    assert done_data["chain_verification"]["verdict"] == "PASS"
+
+
+def test_stream_route_isolation_guardian_before_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Isolation invariant: guardian_decision SSE event appears BEFORE any voice_script for seq=3."""
+    import uuid as _uuid
+    monkeypatch.setenv("GUARDIAN_ATTACKER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+
+    with patch("guardian_mcp.llm_attacker.LLMAttacker.generate_attack") as mock_gen:
+        mock_gen.return_value = {
+            "request_id": f"llm-request:{_uuid.uuid4()}",
+            "tool_name": "wallet.sign",
+            "arguments": {"destination": "x.invalid", "amount": "1"},
+            "content_hash": "d" * 64,
+            "llm_reasoning": "Attack.",
+            "model": "gpt-4o",
+            "agent_source": "agent:llm-attacker-gpt4o",
+            "session_id": "sess:test",
+            "run_id": "run:test",
+        }
+        response = client.post("/api/llm-attack/stream?voice=true&speed=1.0")
+
+    event_sequence = []
+    lines = response.text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("event:"):
+            et = line.split(":", 1)[1].strip()
+            payload = {}
+            if i + 1 < len(lines) and lines[i + 1].startswith("data:"):
+                try:
+                    payload = json.loads(lines[i + 1][5:].strip())
+                except json.JSONDecodeError:
+                    pass
+            event_sequence.append((et, payload))
+
+    # Find position of guardian_decision and first voice_script with sequence=3
+    gd_pos = next(
+        (i for i, (et, _) in enumerate(event_sequence) if et == "guardian_decision"),
+        None,
+    )
+    vs3_pos = next(
+        (
+            i for i, (et, p) in enumerate(event_sequence)
+            if et == "voice_script" and p.get("sequence") == 3
+        ),
+        None,
+    )
+
+    assert gd_pos is not None, "guardian_decision event not found"
+    assert vs3_pos is not None, "voice_script sequence=3 not found"
+    assert gd_pos < vs3_pos, (
+        f"Isolation violated: guardian_decision at pos {gd_pos}, "
+        f"voice_script(seq=3) at pos {vs3_pos} — audio came before security event"
+    )
+
+
+def test_stream_done_event_has_chain_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R041: chain_scope field in done event explicitly documents scope limitation."""
+    import uuid as _uuid
+    monkeypatch.setenv("GUARDIAN_ATTACKER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+
+    with patch("guardian_mcp.llm_attacker.LLMAttacker.generate_attack") as mock_gen:
+        mock_gen.return_value = {
+            "request_id": f"llm-request:{_uuid.uuid4()}",
+            "tool_name": "wallet.sign",
+            "arguments": {"destination": "x.invalid", "amount": "1"},
+            "content_hash": "e" * 64,
+            "llm_reasoning": "Attack.",
+            "model": "gpt-4o",
+            "agent_source": "agent:llm-attacker-gpt4o",
+            "session_id": "sess:test",
+            "run_id": "run:test",
+        }
+        response = client.post("/api/llm-attack/stream?voice=false")
+
+    done_data = None
+    lines = response.text.splitlines()
+    for i, line in enumerate(lines):
+        if line == "event: done":
+            for j in range(i + 1, min(i + 5, len(lines))):
+                if lines[j].startswith("data:"):
+                    done_data = json.loads(lines[j][5:].strip())
+                    break
+            break
+
+    assert done_data is not None
+    assert done_data["chain_verification"].get("chain_scope") == "defender_events", (
+        "chain_scope must be 'defender_events' — R041 explicit scope documentation"
+    )

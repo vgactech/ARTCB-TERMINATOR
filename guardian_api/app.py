@@ -244,21 +244,30 @@ def run_llm_attack() -> dict[str, Any]:
 
 
 @app.post("/api/llm-attack/stream")
-def stream_llm_attack() -> StreamingResponse:
-    """Server-Sent Events stream for a live LLM attack vs Guardian.
+def stream_llm_attack(
+    voice: bool = True,
+    speed: float = 1.0,
+) -> StreamingResponse:
+    """Server-Sent Events stream — live LLM attack vs Guardian, with optional voice.
 
-    Emits one SSE event per pipeline step — the frontend can update the
-    execution graph and play audio in real time, without waiting for the
-    full result.
+    Query parameters:
+      voice (bool, default true)  : include ElevenLabs audio in voice_audio events.
+                                    Set to false for text-only mode — no ElevenLabs
+                                    latency, Guardian decisions never delayed.
+      speed (float, default 1.0)  : voice playback speed (0.5–2.0).
+                                    0.7 = slow/clear, 1.0 = normal, 1.3 = fast.
+
+    Both modes emit voice_script events with narration text.
+    voice=false emits no voice_audio events at all.
 
     Event types (SSE `event:` field):
       session_opened    — 4 agents registered
       attack_generated  — LLM chose a tool + reasoning
       propagation       — causal relay record
-      guardian_decision — BLOCK / ALLOW / ESCALATE + evidence
+      guardian_decision — BLOCK / ALLOW / ESCALATE + evidence  ← ALWAYS BEFORE AUDIO
       chain_verified    — R0 hash + parent chain result
-      voice_script      — commentator / agent narration text
-      voice_audio       — base64 mp3 chunk (if ElevenLabs available)
+      voice_script      — commentator / agent narration text (always)
+      voice_audio       — base64 mp3 chunk (voice=true only)
       done              — pipeline complete, full result included
 
     Requires: GUARDIAN_ATTACKER_ENABLED=true, OPENAI_API_KEY (Doppler aws/dev)
@@ -270,8 +279,9 @@ def stream_llm_attack() -> StreamingResponse:
             detail="LLM attacker not enabled. Set GUARDIAN_ATTACKER_ENABLED=true.",
         )
 
+    speed_clamped = max(0.5, min(2.0, speed))
     return StreamingResponse(
-        _sse_generator(),
+        _sse_generator(voice=voice, voice_speed=speed_clamped),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -286,17 +296,51 @@ def _sse_event(event_type: str, data: Any) -> str:
     return f"event: {event_type}\ndata: {payload}\n\n"
 
 
-def _sse_generator() -> Generator[str, None, None]:
-    """Generator that runs the full LLM attack pipeline and yields SSE events."""
+def _emit_voice(
+    vc: Any,
+    role: str,
+    script: str,
+    sequence: int,
+) -> Generator[str, None, None]:
+    """Yield voice_script, then voice_audio if enabled.
+
+    Isolation invariant: caller MUST emit guardian_decision before calling this.
+    Audio latency NEVER delays security events.
+    """
+    yield _sse_event("voice_script", {"role": role, "text": script, "sequence": sequence})
+    if vc.is_enabled() and script:
+        audio = (
+            vc.speak_commentator(script) if role == "commentator"
+            else vc.speak_agent(role, script)
+        )
+        if audio:
+            yield _sse_event("voice_audio", {
+                "role": role,
+                "sequence": sequence,
+                "audio_b64": base64.b64encode(audio).decode(),
+                "mime": "audio/mpeg",
+                "speed": vc.speed,
+            })
+
+
+def _sse_generator(
+    *, voice: bool = True, voice_speed: float = 1.0
+) -> Generator[str, None, None]:
+    """Generator that runs the full LLM attack pipeline and yields SSE events.
+
+    Isolation contract (R041 P0):
+      Every security event (guardian_decision, chain_verified) is yielded
+      BEFORE any voice synthesis call for that step. Audio latency never
+      delays the security pipeline.
+    """
     from guardian_mcp.llm_attacker import LLMAttacker
     from guardian_mcp.attacker_agent import AgentRequest
     from guardian_mcp.voice_commentary import (
         VoiceCommentary, VoiceEvent,
         build_commentary_script, build_agent_script,
-        events_from_llm_attack_result,
     )
 
-    vc = VoiceCommentary()
+    vc = VoiceCommentary(voice=voice, voice_speed=voice_speed)
 
     # ── S0: session opened ────────────────────────────────────────────────────
     orchestrator = OrchestratorAgent()
@@ -328,30 +372,11 @@ def _sse_generator() -> Generator[str, None, None]:
             {"id": context.defender_id,     "role": "defender"},
         ],
     }
+    # ── S0: session opened — emit security event FIRST, voice AFTER ───────────
     yield _sse_event("session_opened", session_data)
-
-    # Commentator narrates session open; orchestrator speaks first-person
     ve_session = VoiceEvent("session_opened", session_data, sequence=0)
-    script = build_commentary_script(ve_session)
-    yield _sse_event("voice_script", {"role": "commentator", "text": script, "sequence": 0})
-    if vc.is_enabled():
-        audio = vc.speak_commentator(script)
-        if audio:
-            yield _sse_event("voice_audio", {
-                "role": "commentator", "sequence": 0,
-                "audio_b64": base64.b64encode(audio).decode(),
-                "mime": "audio/mpeg",
-            })
-
-    orch_script = build_agent_script("orchestrator", ve_session)
-    yield _sse_event("voice_script", {"role": "orchestrator", "text": orch_script, "sequence": 0})
-    if vc.is_enabled():
-        audio = vc.speak_agent("orchestrator", orch_script)
-        if audio:
-            yield _sse_event("voice_audio", {
-                "role": "orchestrator", "sequence": 0,
-                "audio_b64": base64.b64encode(audio).decode(), "mime": "audio/mpeg",
-            })
+    yield from _emit_voice(vc, "commentator",  build_commentary_script(ve_session), 0)
+    yield from _emit_voice(vc, "orchestrator", build_agent_script("orchestrator", ve_session), 0)
 
     # ── S1: LLM generates attack ──────────────────────────────────────────────
     llm_result = llm_attacker.generate_attack()
@@ -373,19 +398,10 @@ def _sse_generator() -> Generator[str, None, None]:
         "reasoning": llm_result["llm_reasoning"],
         "request_id": llm_result["request_id"],
     }
+    # Attacker is SILENT — commentator describes its action only
     yield _sse_event("attack_generated", attack_data)
-
-    # Commentator describes attacker action — attacker is SILENT
     ve_attack = VoiceEvent("attack_generated", attack_data, sequence=1)
-    script = build_commentary_script(ve_attack)
-    yield _sse_event("voice_script", {"role": "commentator", "text": script, "sequence": 1})
-    if vc.is_enabled():
-        audio = vc.speak_commentator(script)
-        if audio:
-            yield _sse_event("voice_audio", {
-                "role": "commentator", "sequence": 1,
-                "audio_b64": base64.b64encode(audio).decode(), "mime": "audio/mpeg",
-            })
+    yield from _emit_voice(vc, "commentator", build_commentary_script(ve_attack), 1)
 
     # ── S2: propagation ───────────────────────────────────────────────────────
     propagation = propagator.relay_request(
@@ -395,21 +411,11 @@ def _sse_generator() -> Generator[str, None, None]:
     )
     prop_data = _to_json_value(propagation)
     yield _sse_event("propagation", prop_data)
-
     ve_prop = VoiceEvent("propagation", prop_data, sequence=2)
-    prop_script = build_agent_script("propagator", ve_prop)
-    yield _sse_event("voice_script", {"role": "propagator", "text": prop_script, "sequence": 2})
-    if vc.is_enabled():
-        audio = vc.speak_agent("propagator", prop_script)
-        if audio:
-            yield _sse_event("voice_audio", {
-                "role": "propagator", "sequence": 2,
-                "audio_b64": base64.b64encode(audio).decode(), "mime": "audio/mpeg",
-            })
+    yield from _emit_voice(vc, "propagator", build_agent_script("propagator", ve_prop), 2)
 
-    # ── S3: Guardian decision ─────────────────────────────────────────────────
+    # ── S3: Guardian decision — SECURITY EVENT BEFORE ANY AUDIO ──────────────
     policy_result = defender.evaluate_request(request)
-
     guardian_data = {
         "decision": policy_result.decision.value,
         "reason": policy_result.reason,
@@ -418,27 +424,16 @@ def _sse_generator() -> Generator[str, None, None]:
         "evidence_id": policy_result.evidence_id or None,
         "guardian_event_id": policy_result.guardian_event_id,
         "tool_name": llm_result["tool_name"],
+        "chain_scope": "defender_events",   # R041: explicit scope
     }
+    # ← guardian_decision emitted HERE, before any voice synthesis
     yield _sse_event("guardian_decision", guardian_data)
-
-    # Commentator + defender speak about the decision
+    # Voice AFTER the decision — audio latency never delays Guardian
     ve_decision = VoiceEvent("guardian_decision", guardian_data, sequence=3)
-    for role, builder in [
-        ("commentator", build_commentary_script),
-        ("defender",    lambda ve: build_agent_script("defender", ve)),
-    ]:
-        script = builder(ve_decision)
-        yield _sse_event("voice_script", {"role": role, "text": script, "sequence": 3})
-        if vc.is_enabled():
-            audio = (vc.speak_commentator(script) if role == "commentator"
-                     else vc.speak_agent(role, script))
-            if audio:
-                yield _sse_event("voice_audio", {
-                    "role": role, "sequence": 3,
-                    "audio_b64": base64.b64encode(audio).decode(), "mime": "audio/mpeg",
-                })
+    yield from _emit_voice(vc, "commentator", build_commentary_script(ve_decision), 3)
+    yield from _emit_voice(vc, "defender", build_agent_script("defender", ve_decision), 3)
 
-    # ── S4: chain verification ────────────────────────────────────────────────
+    # ── S4: chain verification — SECURITY EVENT BEFORE ANY AUDIO ─────────────
     events = defender.get_all_events()
     previous_hash = GENESIS_HASH
     chain_valid = True
@@ -460,19 +455,12 @@ def _sse_generator() -> Generator[str, None, None]:
         "verdict": "PASS" if chain_valid else "FAIL",
         "events_replayed": len(events),
         "mismatches": [] if chain_valid else ["hash or parent link mismatch"],
+        "chain_scope": "defender_events",   # R041: explicit scope — not all agents
     }
+    # ← chain_verified emitted HERE, before voice
     yield _sse_event("chain_verified", chain_data)
-
     ve_chain = VoiceEvent("chain_verified", chain_data, sequence=4)
-    script = build_commentary_script(ve_chain)
-    yield _sse_event("voice_script", {"role": "commentator", "text": script, "sequence": 4})
-    if vc.is_enabled():
-        audio = vc.speak_commentator(script)
-        if audio:
-            yield _sse_event("voice_audio", {
-                "role": "commentator", "sequence": 4,
-                "audio_b64": base64.b64encode(audio).decode(), "mime": "audio/mpeg",
-            })
+    yield from _emit_voice(vc, "commentator", build_commentary_script(ve_chain), 4)
 
     # ── done: full result ─────────────────────────────────────────────────────
     yield _sse_event("done", {

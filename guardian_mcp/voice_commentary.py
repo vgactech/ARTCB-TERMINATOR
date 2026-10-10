@@ -50,6 +50,10 @@ _ROLE_TO_VOICE: dict[str, str] = {
 
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
+# Voice speed: 0.7 = slower/clearer, 1.0 = normal, 1.3 = faster commentary
+# Override via GUARDIAN_VOICE_SPEED env var or per-call parameter.
+_DEFAULT_VOICE_SPEED: float = float(os.environ.get("GUARDIAN_VOICE_SPEED", "1.0"))
+
 _DEFAULT_TTS_SETTINGS = {
     "stability": 0.55,
     "similarity_boost": 0.75,
@@ -202,18 +206,42 @@ class VoiceCommentary:
 
     Falls back gracefully to text-only mode (returns empty bytes + logs a warning)
     if VOICE_1_ELEVENLABS_API is not set or ElevenLabs is unreachable.
+
+    Voice speed (voice_speed parameter):
+      0.5 = very slow, clear for complex technical content
+      0.7 = slow, recommended for forensic commentary
+      1.0 = normal speed (default)
+      1.3 = fast, live sports-commentary style
+      2.0 = maximum speed
+
+    Two operating modes:
+      voice=True  : full narration — text + mp3 audio emitted per step
+      voice=False : text-only — voice_script events only, no audio calls,
+                    no ElevenLabs latency, Guardian decisions never delayed
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, voice: bool = True, voice_speed: float | None = None) -> None:
         self._api_key = os.environ.get("VOICE_1_ELEVENLABS_API", "")
-        self._enabled = bool(self._api_key)
+        # voice=False forces text-only mode regardless of API key
+        self._voice_requested = voice
+        self._enabled = bool(self._api_key) and voice
+        self._speed = voice_speed if voice_speed is not None else _DEFAULT_VOICE_SPEED
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def is_enabled(self) -> bool:
+        """True only when both API key is set AND voice=True was requested."""
         return self._enabled
+
+    def voice_requested(self) -> bool:
+        """True when voice=True was passed, regardless of API key availability."""
+        return self._voice_requested
+
+    @property
+    def speed(self) -> float:
+        return self._speed
 
     def speak_commentator(self, text: str) -> bytes:
         """Synthesize text with the commentator voice. Returns mp3 bytes."""
@@ -249,17 +277,24 @@ class VoiceCommentary:
     def _tts(self, voice_id: str, text: str) -> bytes:
         """Call ElevenLabs /v1/text-to-speech/{voice_id}. Returns mp3 bytes.
 
-        Falls back to empty bytes on any error (network, auth, quota).
-        The rest of the pipeline MUST NOT fail if audio is unavailable.
+        Guardian security decisions are NEVER delayed by this call:
+        - voice=False: returns b"" immediately, no network call
+        - Any network/auth error: returns b"" immediately
+
+        voice_speed controls the speed_alpha parameter (ElevenLabs v3 streaming).
+        Falls back gracefully if speed_alpha is not supported by the model.
         """
         if not self._enabled or not text.strip():
             return b""
 
         url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+        tts_settings = dict(_DEFAULT_TTS_SETTINGS)
         payload = json.dumps({
             "text": text,
             "model_id": "eleven_multilingual_v2",
-            "voice_settings": _DEFAULT_TTS_SETTINGS,
+            "voice_settings": tts_settings,
+            # speed_alpha: ElevenLabs parameter for playback rate (0.7–1.3 typical)
+            "speed_alpha": max(0.5, min(2.0, self._speed)),
         }).encode("utf-8")
 
         req = urllib.request.Request(
