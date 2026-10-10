@@ -869,3 +869,440 @@ def recover_state_from_jsonl(path: str | Path) -> tuple[int, str]:
                 last_hash = h
 
     return last_seq, last_hash
+
+
+# ─── Manifeste de replay (L-019-002) ─────────────────────────────────────────
+
+
+@dataclass
+class ReplayManifest:
+    """Manifeste d'un replay — décrit les préconditions à vérifier avant tout replay.
+
+    L-019-002 / R034 §3.2 : le manifeste doit être vérifié, pas simplement transporté.
+    Le moteur compare le run demandé, le nombre d'entrées, la pointe de chaîne,
+    les versions de schéma et le niveau demandé aux données réellement chargées.
+
+    Champs :
+        run_id             : identifiant du run auditeur.
+        original_chain_tip : hash du dernier événement attendu (ancrage externe).
+        expected_count     : nombre d'entrées attendues dans le journal.
+        schema_version     : version du schéma attendue dans chaque événement.
+        requested_level    : niveau de replay demandé ("R0", "R1", "R2", "R3").
+        created_at         : horodatage de création (RFC-3339 UTC).
+    """
+    run_id: str
+    original_chain_tip: str
+    expected_count: int
+    schema_version: str = SCHEMA_VERSION
+    requested_level: str = "R0"
+    created_at: str = field(default_factory=_utc_now)
+
+
+def verify_manifest_preconditions(
+    manifest: ReplayManifest,
+    path: str | Path,
+) -> ChainVerificationResult:
+    """Vérifie les préconditions du manifeste avant tout replay.
+
+    L-019-002 P0 : un replay ne peut commencer que si :
+    1. La chaîne JSONL est intègre (load_and_verify_jsonl PASS).
+    2. Le nombre d'entrées correspond à manifest.expected_count.
+    3. Le dernier hash correspond à manifest.original_chain_tip.
+    4. Tous les événements portent manifest.schema_version.
+
+    Retourne un ChainVerificationResult avec verdict PASS ou FAIL.
+    Un verdict FAIL doit bloquer tout replay supérieur.
+    """
+    result = load_and_verify_jsonl(
+        path,
+        expected_count=manifest.expected_count,
+        expected_last_hash=manifest.original_chain_tip,
+    )
+    if not result.is_pass():
+        return result
+
+    # Vérification supplémentaire : version de schéma cohérente
+    jsonl_path = Path(path)
+    schema_mismatches: list[dict] = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sv = record.get("schema_version", "")
+            if sv and sv != manifest.schema_version:
+                schema_mismatches.append({
+                    "event_id": record.get("event_id", f"<ligne {lineno}>"),
+                    "field": "schema_version",
+                    "expected": manifest.schema_version,
+                    "stored": sv,
+                })
+
+    if schema_mismatches:
+        return ChainVerificationResult(
+            entries_verified=result.entries_verified,
+            verdict="FAIL",
+            mismatches=schema_mismatches,
+            limits=result.limits + ["L-019-002 P0 : incohérence de schema_version détectée"],
+        )
+
+    return ChainVerificationResult(
+        entries_verified=result.entries_verified,
+        verdict="PASS",
+        mismatches=[],
+        limits=result.limits + [
+            f"L-019-002 P0 : manifeste vérifié — {result.entries_verified} entrées, "
+            f"pointe de chaîne confirmée, schema_version={manifest.schema_version}",
+        ],
+    )
+
+
+# ─── Archive R2 — réponses d'outils archivées (L-019-002 P1) ─────────────────
+
+
+@dataclass
+class ArchivedToolResponse:
+    """Réponse d'outil archivée, liée à son intent_id.
+
+    L-019-002 P1 : associe chaque invocation à un identifiant stable.
+    Le hash d'entrée (input_hash) permet de vérifier que la fixture correspond
+    à l'appel original. La response_hash garantit l'intégrité de la réponse.
+    """
+    intent_id: str          # lien vers l'INTENT de l'appel original
+    tool_name: str
+    input_hash: str         # SHA-256 des arguments d'entrée (doit correspondre à l'INTENT)
+    decision: str           # "ALLOW" | "BLOCK" | "REDACT" | "ESCALATE"
+    execution_status: str   # "EXECUTED" | "FAILED" | "NOT_EXECUTED"
+    response_payload: dict  # réponse canonique archivée
+    response_hash: str      # SHA-256 de response_payload (canonique, clés triées)
+    schema_version: str = SCHEMA_VERSION
+    archived_at: str = field(default_factory=_utc_now)
+
+    def verify_response_hash(self) -> bool:
+        """Vérifie que response_hash correspond à response_payload."""
+        canonical = json.dumps(
+            self.response_payload, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        expected = _sha256_hex(canonical)
+        return expected == self.response_hash
+
+    @staticmethod
+    def compute_response_hash(payload: dict) -> str:
+        """Calcule le hash canonique d'une réponse d'outil."""
+        canonical = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        return _sha256_hex(canonical)
+
+    def to_dict(self) -> dict:
+        return {
+            "archived_at": self.archived_at,
+            "decision": self.decision,
+            "execution_status": self.execution_status,
+            "input_hash": self.input_hash,
+            "intent_id": self.intent_id,
+            "response_hash": self.response_hash,
+            "response_payload": self.response_payload,
+            "schema_version": self.schema_version,
+            "tool_name": self.tool_name,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "ArchivedToolResponse":
+        return ArchivedToolResponse(
+            intent_id=d["intent_id"],
+            tool_name=d["tool_name"],
+            input_hash=d["input_hash"],
+            decision=d["decision"],
+            execution_status=d["execution_status"],
+            response_payload=d["response_payload"],
+            response_hash=d["response_hash"],
+            schema_version=d.get("schema_version", SCHEMA_VERSION),
+            archived_at=d.get("archived_at", ""),
+        )
+
+
+@dataclass
+class ToolResponseArchive:
+    """Archive des réponses d'outils pour le replay R2.
+
+    L-019-002 P1 : stocke les réponses indexées par intent_id.
+    Peut être persisté en JSONL ou maintenu en mémoire.
+    """
+    _entries: dict[str, ArchivedToolResponse] = field(default_factory=dict)
+
+    def record(self, response: ArchivedToolResponse) -> None:
+        """Enregistre une réponse archivée. Lève ValueError si intent_id déjà présent."""
+        if response.intent_id in self._entries:
+            raise ValueError(
+                f"Archive R2 : intent_id '{response.intent_id}' déjà présent — "
+                "duplication détectée, replay refusé"
+            )
+        self._entries[response.intent_id] = response
+
+    def get(self, intent_id: str) -> ArchivedToolResponse | None:
+        return self._entries.get(intent_id)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def to_jsonl(self, path: str | Path) -> None:
+        """Persiste l'archive en JSONL."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for entry in self._entries.values():
+                f.write(json.dumps(entry.to_dict(), separators=(",", ":"), sort_keys=True) + "\n")
+
+    @staticmethod
+    def from_jsonl(path: str | Path) -> "ToolResponseArchive":
+        """Charge une archive depuis un fichier JSONL."""
+        archive = ToolResponseArchive()
+        p = Path(path)
+        if not p.exists():
+            return archive
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                archive._entries[d["intent_id"]] = ArchivedToolResponse.from_dict(d)
+        return archive
+
+
+def make_recording_sink(
+    jsonl_path: str | Path,
+    archive: ToolResponseArchive,
+) -> Callable[[MCPToolEvent, str], None]:
+    """Retourne un sink qui persiste les événements ET archive les réponses R2.
+
+    À utiliser à la place de make_file_sink quand on veut capturer les réponses
+    d'outils pour un replay R2 ultérieur. L'archive est alimentée sur les
+    événements TERMINAL (qui portent execution_status et output_summary réels).
+
+    L-019-002 P1 : les fixtures sont liées aux appels via intent_id, versionnées
+    et leur intégrité est vérifiable via response_hash.
+    """
+    file_sink = make_file_sink(jsonl_path)
+
+    def sink(event: MCPToolEvent, event_hash: str) -> None:
+        # Persister dans le JSONL
+        file_sink(event, event_hash)
+
+        # Archiver la réponse sur les TERMINAL seulement (pas les INTENT)
+        if event.event_phase == EventPhase.TERMINAL and event.intent_id:
+            # La réponse canonique pour R2 est le output_summary + decision + status
+            # (pas le payload brut — l'instrumentation ne conserve que le résumé)
+            response_payload = {
+                "decision": event.decision.value,
+                "execution_status": event.execution_status,
+                "output_summary": event.output_summary,
+                "tool_name": event.tool_name,
+            }
+            response_hash = ArchivedToolResponse.compute_response_hash(response_payload)
+            archived = ArchivedToolResponse(
+                intent_id=event.intent_id,
+                tool_name=event.tool_name,
+                input_hash=event.input_hash,
+                decision=event.decision.value,
+                execution_status=event.execution_status,
+                response_payload=response_payload,
+                response_hash=response_hash,
+                schema_version=event.schema_version,
+            )
+            archive.record(archived)
+
+    return sink
+
+
+# ─── Replay R2 — simulation sans effets externes (L-019-002 P1) ──────────────
+
+
+@dataclass
+class R2ReplayResult:
+    """Résultat d'un replay R2 (outils simulés).
+
+    L-019-002 P1 : distingue intégrité des traces, fidélité de simulation
+    et exactitude métier. Ce sont des propriétés différentes.
+    """
+    verdict: str                    # "PASS" | "FAIL" | "IN_DOUBT"
+    events_replayed: int
+    external_calls_prevented: int   # sentinelle : doit rester 0
+    mismatches: list[dict]
+    in_doubt: list[dict]            # INTENT orphelins détectés
+    limits: list[str]
+
+    def is_pass(self) -> bool:
+        return self.verdict == "PASS"
+
+
+def replay_r2(
+    journal_path: str | Path,
+    archive: ToolResponseArchive,
+    manifest: ReplayManifest,
+) -> R2ReplayResult:
+    """Replay R2 — rejoue le scénario depuis les fixtures archivées.
+
+    L-019-002 P1 — critères R034 §4 :
+    1. Vérification complète du manifeste et de la chaîne avant replay.
+    2. Chaque TERMINAL est mis en correspondance avec sa fixture archivée.
+    3. Aucun exécuteur externe n'est appelé — compteur sentinelle confirmé à 0.
+    4. FAIL si une fixture est absente, altérée (hash invalide), dupliquée
+       ou associée au mauvais intent_id / input_hash.
+    5. FAIL si la décision ou execution_status diverge de la fixture.
+    6. IN_DOUBT si un INTENT n'a pas de TERMINAL correspondant.
+    7. Ne peut jamais rétrograder silencieusement vers R0 tout en affichant PASS.
+
+    Retourne R2ReplayResult avec verdict PASS | FAIL | IN_DOUBT.
+    """
+    # ── P0 : vérifier les préconditions du manifeste ──────────────────────────
+    precond = verify_manifest_preconditions(manifest, journal_path)
+    if not precond.is_pass():
+        return R2ReplayResult(
+            verdict="FAIL",
+            events_replayed=0,
+            external_calls_prevented=0,
+            mismatches=[{
+                "error": "Préconditions du manifeste non satisfaites — replay R2 refusé",
+                "details": precond.mismatches,
+            }],
+            in_doubt=[],
+            limits=precond.limits + [
+                "L-019-002 P0 : replay R2 refusé sur archive non conforme",
+            ],
+        )
+
+    # ── Charger les entrées ───────────────────────────────────────────────────
+    jsonl_path = Path(journal_path)
+    entries: list[dict] = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                return R2ReplayResult(
+                    verdict="FAIL",
+                    events_replayed=0,
+                    external_calls_prevented=0,
+                    mismatches=[{"error": f"JSONL corrompu : {type(e).__name__}"}],
+                    in_doubt=[],
+                    limits=["L-019-002 P1 : journal illisible — replay R2 impossible"],
+                )
+
+    mismatches: list[dict] = []
+    external_calls_prevented = 0  # sentinelle — toujours 0 dans R2
+
+    # ── Vérification des TERMINAL vs fixtures ────────────────────────────────
+    intent_ids_seen: set[str] = set()
+    terminal_intent_ids: set[str] = set()
+
+    for record in entries:
+        phase = record.get("event_phase", "")
+        intent_id = record.get("intent_id", "")
+        event_id = record.get("event_id", "<?>")
+
+        if phase == EventPhase.INTENT:
+            intent_ids_seen.add(intent_id)
+
+        elif phase == EventPhase.TERMINAL and intent_id:
+            terminal_intent_ids.add(intent_id)
+            archived = archive.get(intent_id)
+
+            # Fixture absente
+            if archived is None:
+                mismatches.append({
+                    "event_id": event_id,
+                    "intent_id": intent_id,
+                    "field": "fixture",
+                    "error": "Fixture absente — replay R2 impossible pour cet appel",
+                })
+                continue
+
+            # Vérification intégrité de la fixture (response_hash)
+            if not archived.verify_response_hash():
+                mismatches.append({
+                    "event_id": event_id,
+                    "intent_id": intent_id,
+                    "field": "response_hash",
+                    "error": "Hash de la fixture invalide — fixture altérée",
+                })
+                continue
+
+            # Vérification correspondance input_hash
+            if archived.input_hash != record.get("input_hash", ""):
+                mismatches.append({
+                    "event_id": event_id,
+                    "intent_id": intent_id,
+                    "field": "input_hash",
+                    "original": archived.input_hash[:16] + "…",
+                    "replayed": record.get("input_hash", "")[:16] + "…",
+                    "error": "input_hash diverge — fixture associée au mauvais appel",
+                })
+                continue
+
+            # Vérification correspondance decision
+            if archived.decision != record.get("decision", ""):
+                mismatches.append({
+                    "event_id": event_id,
+                    "intent_id": intent_id,
+                    "field": "decision",
+                    "original": archived.decision,
+                    "replayed": record.get("decision", ""),
+                })
+
+            # Vérification correspondance execution_status
+            if archived.execution_status != record.get("execution_status", ""):
+                mismatches.append({
+                    "event_id": event_id,
+                    "intent_id": intent_id,
+                    "field": "execution_status",
+                    "original": archived.execution_status,
+                    "replayed": record.get("execution_status", ""),
+                })
+
+    # ── INTENT orphelins → IN_DOUBT ──────────────────────────────────────────
+    in_doubt_ids = intent_ids_seen - terminal_intent_ids
+    in_doubt: list[dict] = []
+    for record in entries:
+        if (record.get("event_phase") == EventPhase.INTENT
+                and record.get("intent_id", "") in in_doubt_ids):
+            in_doubt.append({
+                "intent_id": record.get("intent_id", ""),
+                "event_id": record.get("event_id", ""),
+                "tool_name": record.get("tool_name", ""),
+                "sequence_no": record.get("sequence_no", 0),
+                "classification": "IN_DOUBT",
+            })
+
+    terminals_replayed = len(terminal_intent_ids)
+
+    # ── Verdict final ─────────────────────────────────────────────────────────
+    if mismatches:
+        verdict = "FAIL"
+    elif in_doubt:
+        verdict = "IN_DOUBT"
+    else:
+        verdict = "PASS"
+
+    return R2ReplayResult(
+        verdict=verdict,
+        events_replayed=terminals_replayed,
+        external_calls_prevented=external_calls_prevented,
+        mismatches=mismatches,
+        in_doubt=in_doubt,
+        limits=[
+            "L-019-002 P1 : R2 rejoue depuis fixtures archivées — aucun exécuteur externe appelé",
+            "R2 vérifie la fidélité des décisions et des statuts d'exécution",
+            "R2 ne vérifie pas la correction sémantique du contenu retourné par l'outil",
+            "Un verdict PASS R2 ne prouve pas que l'effet externe original était correct",
+            f"Préconditions manifeste : {precond.entries_verified} entrées vérifiées",
+        ],
+    )

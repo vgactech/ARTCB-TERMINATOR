@@ -1242,3 +1242,445 @@ def test_r033_e_in_doubt_nonexistent_file():
     from guardian_mcp.instrumentation import find_in_doubt_intents
     result = find_in_doubt_intents("/tmp/ghost_r033e.jsonl")
     assert result == []
+
+
+# ─── L-019-002 P0 — Préconditions manifeste ──────────────────────────────────
+
+
+def test_l019_p0_manifest_pass_on_valid_journal(tmp_path):
+    """L-019-002 P0 : verify_manifest_preconditions PASS sur un journal valide
+    avec les bons expected_count et original_chain_tip."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, make_file_sink, verify_manifest_preconditions,
+    )
+
+    ledger = tmp_path / "manifest_valid.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    last_hash = lines[-1]["event_hash"]
+    count = len(lines)  # 4
+
+    manifest = ReplayManifest(
+        run_id="run:test-p0",
+        original_chain_tip=last_hash,
+        expected_count=count,
+    )
+    result = verify_manifest_preconditions(manifest, ledger)
+    assert result.is_pass(), f"Manifeste valide doit passer : {result.mismatches}"
+    assert result.entries_verified == count
+    assert any("L-019-002 P0" in l for l in result.limits)
+
+
+def test_l019_p0_manifest_fail_wrong_count(tmp_path):
+    """L-019-002 P0 : FAIL si expected_count ne correspond pas au journal réel."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, make_file_sink, verify_manifest_preconditions,
+    )
+
+    ledger = tmp_path / "manifest_count.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    last_hash = lines[-1]["event_hash"]
+
+    manifest = ReplayManifest(
+        run_id="run:test-p0",
+        original_chain_tip=last_hash,
+        expected_count=999,   # mauvais count
+    )
+    result = verify_manifest_preconditions(manifest, ledger)
+    assert not result.is_pass(), "Mauvais expected_count doit provoquer FAIL"
+    assert any("entries_count" in m.get("field", "") for m in result.mismatches)
+
+
+def test_l019_p0_manifest_fail_wrong_chain_tip(tmp_path):
+    """L-019-002 P0 : FAIL si original_chain_tip ne correspond pas au dernier hash."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, make_file_sink, verify_manifest_preconditions,
+    )
+
+    ledger = tmp_path / "manifest_tip.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    count = len(lines)
+
+    manifest = ReplayManifest(
+        run_id="run:test-p0",
+        original_chain_tip="c" * 64,   # mauvaise pointe
+        expected_count=count,
+    )
+    result = verify_manifest_preconditions(manifest, ledger)
+    assert not result.is_pass(), "Mauvaise pointe de chaîne doit provoquer FAIL"
+    assert any(m.get("field") == "last_event_hash" for m in result.mismatches)
+
+
+def test_l019_p0_manifest_fail_wrong_schema_version(tmp_path):
+    """L-019-002 P0 : FAIL si des événements ont une schema_version incompatible."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, make_file_sink, verify_manifest_preconditions,
+    )
+
+    ledger = tmp_path / "manifest_schema.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines_raw = ledger.read_text().splitlines()
+    last_hash = _json.loads(lines_raw[-1])["event_hash"]
+    count = len(lines_raw)
+
+    manifest = ReplayManifest(
+        run_id="run:test-p0",
+        original_chain_tip=last_hash,
+        expected_count=count,
+        schema_version="9.9.9",   # version incompatible
+    )
+    result = verify_manifest_preconditions(manifest, ledger)
+    assert not result.is_pass(), "schema_version incompatible doit provoquer FAIL"
+    assert any(m.get("field") == "schema_version" for m in result.mismatches)
+
+
+# ─── L-019-002 P1 — Archive R2 et replay_r2 ──────────────────────────────────
+
+
+def test_l019_p1_archive_record_and_retrieve():
+    """L-019-002 P1 : ArchivedToolResponse peut être enregistrée et récupérée."""
+    from guardian_mcp.instrumentation import ArchivedToolResponse, ToolResponseArchive
+
+    archive = ToolResponseArchive()
+    payload = {"decision": "ALLOW", "execution_status": "EXECUTED",
+               "output_summary": "ok:content[1]", "tool_name": "memory.read"}
+    h = ArchivedToolResponse.compute_response_hash(payload)
+    entry = ArchivedToolResponse(
+        intent_id="intent:abc",
+        tool_name="memory.read",
+        input_hash="d" * 64,
+        decision="ALLOW",
+        execution_status="EXECUTED",
+        response_payload=payload,
+        response_hash=h,
+    )
+    archive.record(entry)
+    assert len(archive) == 1
+    retrieved = archive.get("intent:abc")
+    assert retrieved is not None
+    assert retrieved.tool_name == "memory.read"
+    assert retrieved.verify_response_hash()
+
+
+def test_l019_p1_archive_rejects_duplicate_intent_id():
+    """L-019-002 P1 : une duplication d'intent_id dans l'archive lève ValueError."""
+    import pytest as _pytest
+    from guardian_mcp.instrumentation import ArchivedToolResponse, ToolResponseArchive
+
+    archive = ToolResponseArchive()
+    payload = {"decision": "ALLOW", "execution_status": "EXECUTED",
+               "output_summary": "ok", "tool_name": "t"}
+    h = ArchivedToolResponse.compute_response_hash(payload)
+    entry = ArchivedToolResponse(
+        intent_id="intent:dup",
+        tool_name="t",
+        input_hash="a" * 64,
+        decision="ALLOW",
+        execution_status="EXECUTED",
+        response_payload=payload,
+        response_hash=h,
+    )
+    archive.record(entry)
+    with _pytest.raises(ValueError, match="duplication"):
+        archive.record(entry)
+
+
+def test_l019_p1_archive_verify_response_hash_detects_tamper():
+    """L-019-002 P1 : verify_response_hash détecte une fixture altérée."""
+    from guardian_mcp.instrumentation import ArchivedToolResponse, ToolResponseArchive
+
+    payload = {"decision": "ALLOW", "execution_status": "EXECUTED",
+               "output_summary": "ok", "tool_name": "t"}
+    entry = ArchivedToolResponse(
+        intent_id="intent:tamper",
+        tool_name="t",
+        input_hash="a" * 64,
+        decision="ALLOW",
+        execution_status="EXECUTED",
+        response_payload=payload,
+        response_hash="b" * 64,   # hash intentionnellement incorrect
+    )
+    assert not entry.verify_response_hash(), "Un hash incorrect doit être détecté"
+
+
+def test_l019_p1_recording_sink_archives_terminal_events(tmp_path):
+    """L-019-002 P1 : make_recording_sink archive les TERMINAL dans l'archive R2."""
+    from guardian_mcp.instrumentation import (
+        EventPhase, ToolResponseArchive, make_recording_sink,
+    )
+
+    ledger = tmp_path / "recording.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    # 2 appels → 2 fixtures dans l'archive (TERMINAL uniquement)
+    assert len(archive) == 2, f"2 fixtures attendues, trouvées : {len(archive)}"
+
+    # Vérifier que toutes les fixtures ont un response_hash valide
+    for evt, _ in instr.get_events():
+        assert evt.event_phase == EventPhase.TERMINAL
+        archived = archive.get(evt.intent_id)
+        assert archived is not None, f"Fixture manquante pour intent_id={evt.intent_id}"
+        assert archived.verify_response_hash(), "Fixture corrompue"
+        assert archived.tool_name == evt.tool_name
+        assert archived.decision == evt.decision.value
+
+
+def test_l019_p1_archive_persist_and_reload(tmp_path):
+    """L-019-002 P1 : l'archive peut être persistée en JSONL et rechargée."""
+    from guardian_mcp.instrumentation import (
+        ToolResponseArchive, make_recording_sink,
+    )
+
+    ledger = tmp_path / "persist.jsonl"
+    archive_path = tmp_path / "archive.jsonl"
+    archive1 = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive1)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+    archive1.to_jsonl(archive_path)
+
+    archive2 = ToolResponseArchive.from_jsonl(archive_path)
+    assert len(archive2) == 2
+    for iid in (r.intent_id for r in archive1._entries.values()):
+        r2 = archive2.get(iid)
+        assert r2 is not None
+        assert r2.verify_response_hash()
+
+
+def test_l019_p1_replay_r2_pass_full_scenario(tmp_path):
+    """L-019-002 P1 : replay_r2 PASS sur un scénario complet avec fixtures valides."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_pass.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-pass",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+
+    result = replay_r2(ledger, archive, manifest)
+    assert result.is_pass(), f"R2 doit passer sur scénario complet : {result.mismatches}"
+    assert result.events_replayed == 3   # 3 appels TERMINAL
+    assert result.external_calls_prevented == 0
+    assert result.in_doubt == []
+
+
+def test_l019_p1_replay_r2_fail_missing_fixture(tmp_path):
+    """L-019-002 P1 : replay_r2 FAIL si une fixture est absente pour un TERMINAL."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_missing.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-missing",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+
+    # Vider l'archive pour simuler des fixtures manquantes
+    empty_archive = ToolResponseArchive()
+
+    result = replay_r2(ledger, empty_archive, manifest)
+    assert not result.is_pass(), "R2 doit échouer sans fixtures"
+    assert any(m.get("field") == "fixture" for m in result.mismatches)
+
+
+def test_l019_p1_replay_r2_fail_tampered_fixture(tmp_path):
+    """L-019-002 P1 : replay_r2 FAIL si le response_hash d'une fixture est altéré."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_tamper.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Altérer le response_hash de la fixture
+    iid = list(archive._entries.keys())[0]
+    archive._entries[iid].response_hash = "e" * 64
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-tamper",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+
+    result = replay_r2(ledger, archive, manifest)
+    assert not result.is_pass(), "R2 doit détecter la fixture altérée"
+    assert any(m.get("field") == "response_hash" for m in result.mismatches)
+
+
+def test_l019_p1_replay_r2_fail_wrong_input_hash(tmp_path):
+    """L-019-002 P1 : replay_r2 FAIL si la fixture est associée au mauvais input_hash."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_input.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Corrompre l'input_hash de la fixture
+    iid = list(archive._entries.keys())[0]
+    archive._entries[iid].input_hash = "f" * 64
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-input",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+
+    result = replay_r2(ledger, archive, manifest)
+    assert not result.is_pass(), "R2 doit détecter le mauvais input_hash"
+    assert any(m.get("field") == "input_hash" for m in result.mismatches)
+
+
+def test_l019_p1_replay_r2_fail_bad_manifest_preconditions(tmp_path):
+    """L-019-002 P1 : replay_r2 FAIL si les préconditions du manifeste échouent —
+    le replay R2 ne peut pas démarrer sur un journal non conforme."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_badmanif.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Manifeste avec une mauvaise pointe
+    manifest = ReplayManifest(
+        run_id="run:r2-bad",
+        original_chain_tip="0" * 64,  # pointe incorrecte
+        expected_count=2,
+    )
+
+    result = replay_r2(ledger, archive, manifest)
+    assert not result.is_pass(), "R2 doit refuser sur préconditions non satisfaites"
+    assert result.events_replayed == 0
+
+
+def test_l019_p1_replay_r2_in_doubt_orphan_intent(tmp_path):
+    """L-019-002 P1 : replay_r2 retourne IN_DOUBT si un INTENT n'a pas de TERMINAL."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        EventPhase, ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_indoubt.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+    # Supprimer la dernière ligne (TERMINAL du 2e appel)
+    lines = ledger.read_text().splitlines()
+    assert _json.loads(lines[-1])["event_phase"] == EventPhase.TERMINAL
+    truncated_lines = lines[:-1]
+    ledger.write_text("\n".join(truncated_lines) + "\n")
+
+    # Reconstruire le manifeste à partir du journal tronqué
+    entries = [_json.loads(l) for l in truncated_lines if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-indoubt",
+        original_chain_tip=entries[-1]["event_hash"],
+        expected_count=len(entries),
+    )
+
+    # Retirer la fixture du dernier TERMINAL de l'archive (qui n'existe plus)
+    surviving_iid = entries[1]["intent_id"]   # TERMINAL du 1er appel
+    orphan_iid = entries[2]["intent_id"]      # INTENT du 2e appel — orphelin
+
+    result = replay_r2(ledger, archive, manifest)
+    assert result.verdict == "IN_DOUBT", (
+        f"R2 doit retourner IN_DOUBT avec un INTENT orphelin, verdict : {result.verdict}"
+    )
+    assert len(result.in_doubt) == 1
+    assert result.in_doubt[0]["classification"] == "IN_DOUBT"
+
+
+def test_l019_p1_replay_r2_sentinel_external_calls_always_zero(tmp_path):
+    """L-019-002 P1 : external_calls_prevented est toujours 0 dans R2 —
+    aucun exécuteur externe n'est appelé pendant un replay R2."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        ReplayManifest, ToolResponseArchive, make_recording_sink, replay_r2,
+    )
+
+    ledger = tmp_path / "r2_sentinel.jsonl"
+    archive = ToolResponseArchive()
+    sink = make_recording_sink(ledger, archive)
+    instr = make_instr(event_sink=sink)
+    for _ in range(5):
+        instr.handle_tool_call(
+            {"name": "blockchain.query", "arguments": {}}, executor=ok_executor
+        )
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    manifest = ReplayManifest(
+        run_id="run:r2-sentinel",
+        original_chain_tip=lines[-1]["event_hash"],
+        expected_count=len(lines),
+    )
+
+    result = replay_r2(ledger, archive, manifest)
+    assert result.is_pass()
+    assert result.external_calls_prevented == 0, (
+        "La sentinelle doit confirmer qu'aucun exécuteur externe n'a été appelé"
+    )
+    assert result.events_replayed == 5
