@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Activity, Bell, CircleCheck, Play, Radar, ShieldCheck } from 'lucide-react'
+import { Activity, Bell, CircleCheck, Play, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
 import { OrchestrationProof } from './components/OrchestrationProof'
@@ -12,6 +12,13 @@ import type { PolicyScenario, PolicyScenarioResult } from './api/guardian'
 const ExecutionGraphOverlay = lazy(() =>
   import('./components/ExecutionGraphOverlay').then((module) => ({ default: module.ExecutionGraphOverlay })),
 )
+
+const scenarioDescriptions: Record<string, string> = {
+  'safe-read': 'Normal request',
+  'prompt-injection': 'Malicious instruction',
+  'sensitive-exfiltration': 'Protected tool access',
+  'human-approval': 'Manual review required',
+}
 
 function App() {
   const [activeAgent, setActiveAgent] = useState(-1)
@@ -58,9 +65,9 @@ function App() {
   }
 
   const metrics = [
-    { label: 'System status', value: engineState === 'online' ? 'Protected' : engineState === 'offline' ? 'Offline' : 'Checking', detail: 'Live backend connection', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
-    { label: 'Agents participating', value: result ? `${result.distinct_agent_count} / 4` : 'Ready', detail: result ? 'Distinct backend instances verified' : 'Awaiting execution', iconClass: 'text-cyan-300' },
-    { label: 'Evidence chain', value: result?.chain_verification.verdict ?? 'Ready', detail: result ? `${result.events.length} real events recorded` : 'Awaiting execution', iconClass: 'text-violet-300' },
+    { label: 'System status', value: engineState === 'online' ? 'Protected' : engineState === 'offline' ? 'Offline' : 'Checking', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
+    { label: 'Agents participating', value: result ? `${result.distinct_agent_count} / 4` : 'Ready', iconClass: 'text-cyan-300' },
+    { label: 'Evidence chain', value: result?.chain_verification.verdict ?? 'Ready', iconClass: 'text-violet-300' },
   ]
 
   return (
@@ -85,22 +92,21 @@ function App() {
       <div className="relative mx-auto max-w-7xl px-5 py-8 lg:px-8 lg:py-10">
         <section className="min-w-0">
           <div className="min-w-0">
-            <div className="mb-3 flex items-center gap-2 font-mono text-xs font-semibold tracking-[0.2em] text-emerald-300 uppercase"><Radar size={15} /> Live defense environment</div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance text-white md:text-5xl">Security operations overview</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Run security requests through four distinct backend agents and inspect Guardian's policy evidence.</p>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 md:text-base">Test requests through four Guardian agents.</p>
           </div>
           <span id="simulation-status" className="sr-only" aria-live="polite">{apiError || (completed ? `Guardian returned ${result.decision}.` : running ? `Processing agent ${activeAgent + 1} of 4.` : 'Simulation ready.')}</span>
         </section>
 
         <section className="mt-8" aria-labelledby="scenario-heading">
           <div className="flex items-end justify-between gap-4">
-            <div><h2 id="scenario-heading" className="text-lg font-semibold tracking-tight text-white sm:text-xl">Choose a live policy scenario</h2><p className="mt-1 text-xs text-slate-500">Each option is evaluated by the Guardian backend.</p></div>
+            <h2 id="scenario-heading" className="text-lg font-semibold tracking-tight text-white sm:text-xl">Choose a live policy scenario</h2>
             <span className="font-mono text-[10px] text-slate-600">{scenarios.length} AVAILABLE</span>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {scenarios.map((scenario) => (
               <button key={scenario.id} type="button" disabled={running} onClick={() => setSelectedScenario(scenario.id)} className={`rounded-xl border p-4 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${selectedScenario === scenario.id ? 'border-emerald-400/40 bg-emerald-400/[0.07]' : 'border-white/8 bg-slate-950/55 hover:border-white/15'}`}>
-                <span className="font-mono text-[10px] font-bold text-emerald-300">{scenario.risk} RISK</span><span className="mt-2 block text-sm font-semibold text-white">{scenario.name}</span><span className="mt-1 block text-xs leading-5 text-slate-500">{scenario.description}</span>
+                <span className="font-mono text-[10px] font-bold text-emerald-300">{scenario.risk} RISK</span><span className="mt-2 block text-sm font-semibold text-white">{scenario.name}</span><span className="mt-1 block text-xs leading-5 text-slate-500">{scenarioDescriptions[scenario.id]}</span>
               </button>
             ))}
           </div>
@@ -110,7 +116,7 @@ function App() {
         </section>
 
         <section className="mt-8 grid gap-4 md:grid-cols-3">
-          {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p><p className="mt-1 text-xs text-slate-500">{metric.detail}</p></motion.article>)}
+          {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p></motion.article>)}
         </section>
 
         <section className="mt-6 grid gap-6 lg:grid-cols-[1.65fr_1fr]">
