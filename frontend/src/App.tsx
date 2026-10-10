@@ -71,9 +71,9 @@ function App() {
   ]
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[#05080f] text-slate-100">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_70%_0%,rgba(16,185,129,0.09),transparent_35%)]" />
-      <header className="relative border-b border-white/8 bg-[#070b14]/90 backdrop-blur-xl">
+    <main className="min-h-screen overflow-x-hidden bg-[linear-gradient(145deg,#0b1b30_0%,#0a1728_45%,#092526_100%)] text-slate-100">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_72%_5%,rgba(34,211,238,0.1),transparent_34%),radial-gradient(circle_at_12%_42%,rgba(16,185,129,0.08),transparent_30%)]" />
+      <header className="relative border-b border-white/8 bg-[#0a1627]/82 backdrop-blur-xl">
         <div className="mx-auto flex h-18 max-w-7xl items-center justify-between px-5 lg:px-8">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300"><ShieldCheck size={23} aria-hidden="true" /></div>
