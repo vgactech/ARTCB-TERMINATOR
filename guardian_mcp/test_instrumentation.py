@@ -550,3 +550,79 @@ def test_r028_c_gap_documented_in_limits(tmp_path):
     assert any("R028-C" in l for l in result.limits), \
         "La limite gap exécution/écriture doit être documentée dans les limites"
 
+
+# ─── R030-001 / R030-002 — Anomalies du contre-audit R029 ────────────────────
+
+
+def test_r030_001_empty_journal_with_only_last_hash_fails(tmp_path):
+    """R030-001 : un journal vide avec expected_last_hash seul (sans expected_count)
+    doit retourner FAIL — pas PASS."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl
+
+    ledger = tmp_path / "empty_hash.jsonl"
+    ledger.write_text("")
+
+    result = load_and_verify_jsonl(ledger, expected_last_hash="a" * 64)
+    assert not result.is_pass(), (
+        "Un journal vide avec expected_last_hash fourni doit retourner FAIL"
+    )
+    assert any(m.get("field") == "entries_count" for m in result.mismatches)
+
+
+def test_r030_001_empty_journal_no_anchor_returns_pass(tmp_path):
+    """R030-001 : un journal vide sans ancrage externe retourne PASS
+    (comportement documenté comme limite, non comme erreur)."""
+    from guardian_mcp.instrumentation import load_and_verify_jsonl
+
+    ledger = tmp_path / "empty_no_anchor.jsonl"
+    ledger.write_text("")
+
+    result = load_and_verify_jsonl(ledger)
+    # Sans ancrage, un journal vide est PASS avec 0 entrées vérifiées —
+    # la limite est documentée dans les résultats
+    assert result.is_pass()
+    assert result.entries_verified == 0
+    assert any("ancrage" in l or "troncature" in l for l in result.limits)
+
+
+def test_r030_002_recover_state_refuses_corrupted_journal(tmp_path):
+    """R030-002 : recover_state_from_jsonl refuse un journal corrompu
+    et lève ValueError au lieu de retourner silencieusement un état invalide."""
+    import json as _json
+    import pytest as _pytest
+    from guardian_mcp.instrumentation import make_file_sink, recover_state_from_jsonl
+
+    ledger = tmp_path / "corrupt_recover.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Corrompre le hash du premier événement
+    lines = ledger.read_text().splitlines()
+    rec = _json.loads(lines[0])
+    rec["event_hash"] = "b" * 64
+    lines[0] = _json.dumps(rec, separators=(",", ":"), sort_keys=True)
+    ledger.write_text("\n".join(lines) + "\n")
+
+    with _pytest.raises(ValueError, match="R030-002"):
+        recover_state_from_jsonl(ledger)
+
+
+def test_r030_002_recover_state_accepts_valid_journal(tmp_path):
+    """R030-002 : recover_state_from_jsonl accepte un journal valide
+    et retourne l'état correct."""
+    from guardian_mcp.instrumentation import make_file_sink, recover_state_from_jsonl
+
+    ledger = tmp_path / "valid_recover.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    last_seq, last_hash = recover_state_from_jsonl(ledger)
+    assert last_seq == 3
+    assert len(last_hash) == 64
+    assert last_hash != "0" * 64
+

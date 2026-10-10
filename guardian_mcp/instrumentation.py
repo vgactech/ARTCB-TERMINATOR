@@ -519,7 +519,18 @@ def load_and_verify_jsonl(
                     limits=[],
                 )
 
-    # R028-A : un journal vide (ou vidé) alors qu'un count est attendu → FAIL
+    # R028-A : journal vide avec ancrage externe → FAIL systématique
+    # R030-001 : un expected_last_hash non vide sur un journal vide doit aussi FAIL.
+    if not entries and expected_last_hash:
+        return ChainVerificationResult(
+            entries_verified=0,
+            verdict="FAIL",
+            mismatches=[{
+                "error": "Journal vide mais expected_last_hash fourni — journal manquant ou entièrement tronqué",
+                "field": "entries_count",
+            }],
+            limits=["R030-001 : journal vide détecté via expected_last_hash"],
+        )
     if expected_count is not None and len(entries) != expected_count:
         return ChainVerificationResult(
             entries_verified=len(entries),
@@ -625,13 +636,29 @@ def recover_state_from_jsonl(path: str | Path) -> tuple[int, str]:
     l'écriture dans un fichier existant sans rompre la chaîne ni répéter
     les numéros de séquence.
 
+    R030-002 : effectue une vérification complète de la chaîne avant de
+    retourner l'état. Lève ValueError si le journal est corrompu (hash invalide,
+    séquence non monotone ou chaînage rompu). La reprise est refusée sur un
+    journal dont l'intégrité n'a pas été établie.
+
     Retourne (0, GENESIS_HASH) si le fichier n'existe pas ou est vide.
-    Lève ValueError si le fichier contient des entrées mais est corrompu.
+    Lève ValueError si le journal contient des incohérences.
     """
     jsonl_path = Path(path)
     if not jsonl_path.exists():
         return 0, GENESIS_HASH
 
+    # Vérification complète avant d'extraire l'état
+    result = load_and_verify_jsonl(jsonl_path)
+    if result.entries_verified == 0:
+        return 0, GENESIS_HASH
+    if not result.is_pass():
+        raise ValueError(
+            f"Reprise refusée : le journal '{path}' contient {len(result.mismatches)} "
+            f"incohérence(s) — R030-002. Vérifiez avec load_and_verify_jsonl() avant de reprendre."
+        )
+
+    # Journal valide — récupérer le dernier état depuis les lignes brutes
     last_seq = 0
     last_hash = GENESIS_HASH
 
