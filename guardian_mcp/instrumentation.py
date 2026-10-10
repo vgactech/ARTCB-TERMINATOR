@@ -46,6 +46,23 @@ DOMAIN_PREFIX = b"ARTCB-GUARDIAN-EVENT-V1"
 CHAIN_DOMAIN_PREFIX = b"ARTCB-GUARDIAN-CHAIN-V1"
 GENESIS_HASH = "0" * 64
 
+# ─── Phases d'événement (R033-A) ─────────────────────────────────────────────
+
+class EventPhase(str, Enum):
+    """Phase de cycle de vie d'un événement Guardian.
+
+    INTENT    : journalisé AVANT l'appel à l'exécuteur — preuve d'intention.
+                Si l'exécuteur ne termine jamais, cet événement reste seul.
+    TERMINAL  : journalisé APRÈS l'appel (ou après BLOCK/ESCALATE immédiat).
+                Sous-types via terminal_status : COMPLETED | FAILED | NOT_EXECUTED.
+
+    Un intent_id commun lie l'intent et son terminal.
+    Un redémarrage avec un intent sans terminal correspondant doit classer
+    l'appel comme IN_DOUBT (R033-E).
+    """
+    INTENT = "INTENT"
+    TERMINAL = "TERMINAL"
+
 # ─── Décisions de politique ───────────────────────────────────────────────────
 
 
@@ -88,6 +105,13 @@ class MCPToolEvent:
     # R032-C : marqueur de rejeu — True si cet événement est produit lors d'un replay.
     # Un événement de replay ne doit pas déclencher d'action externe.
     is_replay: bool = False
+    # R033-A : phase du cycle de vie de l'événement.
+    # INTENT   : journalisé avant l'exécution.
+    # TERMINAL : journalisé après l'exécution (ou immédiatement pour BLOCK/ESCALATE).
+    event_phase: str = EventPhase.TERMINAL  # défaut : TERMINAL pour rétrocompatibilité
+    # R033-A : identifiant commun entre l'intent et son terminal.
+    # Vide ("") pour les événements TERMINAL directement émis (BLOCK/ESCALATE).
+    intent_id: str = ""
     schema_id: str = SCHEMA_ID
     schema_version: str = SCHEMA_VERSION
 
@@ -97,6 +121,8 @@ class MCPToolEvent:
         Le champ previous_event_hash est inclus dans le corps canonique (R023-002) :
         tout changement d'ordre ou suppression d'un événement modifie le hash
         de l'événement suivant dans la chaîne.
+
+        R033-A : event_phase et intent_id sont inclus dans le corps canonique.
         """
         return {
             "agent_id": self.agent_id,
@@ -104,9 +130,11 @@ class MCPToolEvent:
             "decision_reason": self.decision_reason,
             "duration_ms": self.duration_ms,
             "event_id": self.event_id,
+            "event_phase": self.event_phase,
             "event_type": self.event_type,
             "execution_status": self.execution_status,
             "input_hash": self.input_hash,
+            "intent_id": self.intent_id,
             "is_replay": self.is_replay,
             "occurred_at": self.occurred_at,
             "output_summary": self.output_summary,
@@ -240,63 +268,118 @@ class GuardianMCPInstrumentation:
         self,
         params: dict[str, Any],
         executor: Callable[[dict[str, Any]], Any],
+        *,
+        is_replay: bool = False,
     ) -> dict[str, Any]:
         """Intercepte un tools/call MCP.
 
         1. Évalue la politique Guardian.
-        2. Si ALLOW/REDACT : exécute l'outil.
-        3. Enregistre l'événement dans le ledger.
-        4. Retourne la réponse MCP enrichie du guardian_event_id.
+        2. R033-A : journalise un événement INTENT avant toute exécution externe.
+        3. Si ALLOW/REDACT et non replay : exécute l'outil.
+           R033-B : en mode replay (is_replay=True), l'exécuteur réel n'est JAMAIS appelé.
+                    La barrière est physique — aucun chemin de code ne contourne ce test.
+        4. R033-A : journalise un événement TERMINAL après exécution.
+        5. Retourne la réponse MCP enrichie du guardian_event_id.
 
         Args:
-            params:   Paramètres de la requête tools/call (name + arguments).
-            executor: Fonction d'exécution de l'outil (ex: execute_tool).
+            params:    Paramètres de la requête tools/call (name + arguments).
+            executor:  Fonction d'exécution de l'outil (ex: execute_tool).
+            is_replay: R033-B — si True, l'exécuteur n'est pas appelé. Les événements
+                       produits portent is_replay=True dans leur corps canonique.
 
         Returns:
             Réponse MCP avec un champ supplémentaire ``_guardian_event_id``.
         """
         tool_name = params.get("name", "unknown")
         arguments = params.get("arguments", {})
+        input_hash = _sha256_hex(json.dumps(arguments, sort_keys=True).encode())
 
         decision, reason = _evaluate_policy(tool_name, arguments)
 
+        # ── R033-A : journaliser l'INTENT avant toute exécution externe ──────
+        intent_id = str(uuid.uuid4())
+        self._seq += 1
+        prev_hash = self._events[-1][1] if self._events else GENESIS_HASH
+        intent_event = MCPToolEvent(
+            event_id=str(uuid.uuid4()),
+            event_type="mcp.tool.call",
+            occurred_at=_utc_now(),
+            tool_name=tool_name,
+            agent_id=self.agent_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            sequence_no=self._seq,
+            decision=decision,
+            decision_reason=reason,
+            input_hash=input_hash,
+            output_summary="INTENT",
+            duration_ms=0.0,
+            previous_event_hash=prev_hash,
+            execution_status="NOT_EXECUTED",
+            is_replay=is_replay,
+            event_phase=EventPhase.INTENT,
+            intent_id=intent_id,
+        )
+        intent_hash = intent_event.compute_hash()
+        self._events.append((intent_event, intent_hash))
+        self._event_sink(intent_event, intent_hash)
+
+        # ── Exécution ─────────────────────────────────────────────────────────
         t0 = time.monotonic()
         result: dict[str, Any] | None = None
         output_summary = ""
         execution_status = "NOT_EXECUTED"  # R032-A : valeur par défaut
 
         if decision == GuardianDecision.ALLOW:
-            try:
-                result = executor(params)
-                output_summary = _summarize_output(result)
-                execution_status = "EXECUTED"
-            except Exception as exc:  # noqa: BLE001
-                # R026-001 : ne pas exposer str(exc) — peut contenir des données sensibles.
-                # Seul le type d'exception est journalisé ; la réponse externe est générique.
-                logger.error("Erreur outil %s : type=%s", tool_name, type(exc).__name__)
-                output_summary = f"ERROR:{type(exc).__name__}"
-                execution_status = "FAILED"
+            if is_replay:
+                # R033-B : barrière physique — le vrai exécuteur n'est jamais appelé en replay.
+                output_summary = "REPLAY:NOT_EXECUTED"
+                execution_status = "NOT_EXECUTED"
                 result = {
-                    "isError": True,
-                    "content": [{"type": "text", "text": f"[GUARDIAN] Tool execution error (ref: {tool_name})"}],
+                    "isError": False,
+                    "content": [{"type": "text", "text": "[GUARDIAN] Replay mode — execution suppressed"}],
                 }
+            else:
+                try:
+                    result = executor(params)
+                    output_summary = _summarize_output(result)
+                    execution_status = "EXECUTED"
+                except Exception as exc:  # noqa: BLE001
+                    # R026-001 : ne pas exposer str(exc) — peut contenir des données sensibles.
+                    # Seul le type d'exception est journalisé ; la réponse externe est générique.
+                    logger.error("Erreur outil %s : type=%s", tool_name, type(exc).__name__)
+                    output_summary = f"ERROR:{type(exc).__name__}"
+                    execution_status = "FAILED"
+                    result = {
+                        "isError": True,
+                        "content": [{"type": "text", "text": f"[GUARDIAN] Tool execution error (ref: {tool_name})"}],
+                    }
 
         elif decision == GuardianDecision.REDACT:
-            # Exécuter mais masquer les sorties sensibles
-            try:
-                raw = executor(params)
-                result = _redact_output(raw)
-                output_summary = "REDACTED"
-                execution_status = "EXECUTED"
-            except Exception as exc:  # noqa: BLE001
-                # R026-001 : même protection que ALLOW — pas de str(exc) exposé.
-                logger.error("Erreur outil %s (REDACT) : type=%s", tool_name, type(exc).__name__)
+            if is_replay:
+                # R033-B : même barrière pour REDACT.
+                output_summary = "REPLAY:NOT_EXECUTED"
+                execution_status = "NOT_EXECUTED"
                 result = {
-                    "isError": True,
-                    "content": [{"type": "text", "text": "[REDACTED]"}],
+                    "isError": False,
+                    "content": [{"type": "text", "text": "[GUARDIAN] Replay mode — execution suppressed"}],
                 }
-                output_summary = "REDACTED_ERROR"
-                execution_status = "FAILED"
+            else:
+                # Exécuter mais masquer les sorties sensibles
+                try:
+                    raw = executor(params)
+                    result = _redact_output(raw)
+                    output_summary = "REDACTED"
+                    execution_status = "EXECUTED"
+                except Exception as exc:  # noqa: BLE001
+                    # R026-001 : même protection que ALLOW — pas de str(exc) exposé.
+                    logger.error("Erreur outil %s (REDACT) : type=%s", tool_name, type(exc).__name__)
+                    result = {
+                        "isError": True,
+                        "content": [{"type": "text", "text": "[REDACTED]"}],
+                    }
+                    output_summary = "REDACTED_ERROR"
+                    execution_status = "FAILED"
 
         elif decision == GuardianDecision.BLOCK:
             result = {
@@ -318,10 +401,10 @@ class GuardianMCPInstrumentation:
 
         duration_ms = (time.monotonic() - t0) * 1000
 
-        # Produire l'événement — R023-002 : inclure le hash du précédent
+        # ── R033-A : journaliser le TERMINAL après exécution ─────────────────
         self._seq += 1
         prev_hash = self._events[-1][1] if self._events else GENESIS_HASH
-        event = MCPToolEvent(
+        terminal_event = MCPToolEvent(
             event_id=str(uuid.uuid4()),
             event_type="mcp.tool.call",
             occurred_at=_utc_now(),
@@ -332,23 +415,25 @@ class GuardianMCPInstrumentation:
             sequence_no=self._seq,
             decision=decision,
             decision_reason=reason,
-            input_hash=_sha256_hex(json.dumps(arguments, sort_keys=True).encode()),
+            input_hash=input_hash,
             output_summary=output_summary,
             duration_ms=round(duration_ms, 3),
             previous_event_hash=prev_hash,
             execution_status=execution_status,
+            is_replay=is_replay,
+            event_phase=EventPhase.TERMINAL,
+            intent_id=intent_id,
         )
-        event_hash = event.compute_hash()
-        # Toujours alimenter _events (pour prev_hash et introspection),
-        # même quand un sink externe est utilisé.
-        self._events.append((event, event_hash))
-        self._event_sink(event, event_hash)
+        terminal_hash = terminal_event.compute_hash()
+        self._events.append((terminal_event, terminal_hash))
+        self._event_sink(terminal_event, terminal_hash)
 
-        # Enrichir la réponse MCP avec l'event_id Guardian
+        # Enrichir la réponse MCP avec l'event_id Guardian (terminal)
         if result is None:
             result = {}
-        result["_guardian_event_id"] = event.event_id
+        result["_guardian_event_id"] = terminal_event.event_id
         result["_guardian_decision"] = decision.value
+        result["_guardian_intent_id"] = intent_id
 
         return result
 
@@ -357,11 +442,33 @@ class GuardianMCPInstrumentation:
     # ------------------------------------------------------------------
 
     def event_count(self) -> int:
-        """Nombre d'événements enregistrés dans cette session (hors sentinel de reprise)."""
-        return sum(1 for e, _ in self._events if e is not None)
+        """Nombre d'appels tools/call traités (= nombre d'événements TERMINAL).
+
+        Chaque appel handle_tool_call produit un INTENT + un TERMINAL.
+        Cette méthode retourne le nombre de TERMINAL pour rester compatible
+        avec les usages existants (1 appel = 1 événement métier).
+        """
+        return sum(
+            1 for e, _ in self._events
+            if e is not None and e.event_phase == EventPhase.TERMINAL
+        )
 
     def get_events(self) -> list[tuple[MCPToolEvent, str]]:
-        """Retourne tous les événements (event, hash) de la session (hors sentinel de reprise)."""
+        """Retourne uniquement les événements TERMINAL (hors INTENT et sentinel de reprise).
+
+        Chaque entrée correspond à un appel handle_tool_call terminé.
+        Pour obtenir tous les événements (INTENT + TERMINAL), utiliser get_all_events().
+        """
+        return [
+            (e, h) for e, h in self._events
+            if e is not None and e.event_phase == EventPhase.TERMINAL
+        ]
+
+    def get_all_events(self) -> list[tuple[MCPToolEvent, str]]:
+        """Retourne tous les événements (INTENT + TERMINAL), hors sentinel de reprise.
+
+        R033-A : permet d'inspecter le cycle complet intent/terminal.
+        """
         return [(e, h) for e, h in self._events if e is not None]
 
     def last_event_hash(self) -> str | None:
@@ -457,9 +564,11 @@ def make_file_sink(path: str | Path) -> Callable[[MCPToolEvent, str], None]:
             "duration_ms": event.duration_ms,
             "event_hash": event_hash,
             "event_id": event.event_id,
+            "event_phase": event.event_phase,             # R033-A
             "event_type": event.event_type,
             "execution_status": event.execution_status,   # R032-A
             "input_hash": event.input_hash,
+            "intent_id": event.intent_id,                 # R033-A
             "is_replay": event.is_replay,                 # R032-C
             "occurred_at": event.occurred_at,
             "output_summary": event.output_summary,
@@ -582,12 +691,13 @@ def load_and_verify_jsonl(
 
         # 1. Recalculer le hash de l'événement depuis ses champs canoniques
         # R032-A/C : execution_status et is_replay sont désormais dans le corps canonique
+        # R033-A : event_phase et intent_id sont dans le corps canonique
         canonical_fields = {
             k: record[k]
             for k in (
                 "agent_id", "decision", "decision_reason", "duration_ms",
-                "event_id", "event_type", "execution_status", "input_hash",
-                "is_replay", "occurred_at", "output_summary",
+                "event_id", "event_phase", "event_type", "execution_status", "input_hash",
+                "intent_id", "is_replay", "occurred_at", "output_summary",
                 "previous_event_hash", "run_id", "schema_id", "schema_version",
                 "sequence_no", "session_id", "tool_name",
             )
@@ -657,6 +767,52 @@ def load_and_verify_jsonl(
             "un crash entre exécution et écriture laisse un gap non enregistré",
         ],
     )
+
+
+def find_in_doubt_intents(path: str | Path) -> list[dict]:
+    """Identifie les événements INTENT sans TERMINAL correspondant (R033-E).
+
+    Un événement INTENT sans TERMINAL indique un crash ou un arrêt brutal
+    entre la journalisation de l'intention et la fin de l'exécution.
+    Ces appels sont classés IN_DOUBT et doivent être signalés à l'opérateur.
+
+    Retourne une liste de dicts {intent_id, event_id, tool_name, sequence_no, occurred_at}
+    pour chaque intent orphelin trouvé dans le journal.
+
+    Retourne [] si le fichier n'existe pas ou est vide.
+    """
+    jsonl_path = Path(path)
+    if not jsonl_path.exists():
+        return []
+
+    intents: dict[str, dict] = {}      # intent_id → enregistrement INTENT
+    terminals: set[str] = set()        # intent_id des TERMINAL vus
+
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            phase = record.get("event_phase", "")
+            iid = record.get("intent_id", "")
+            if not iid:
+                continue
+            if phase == EventPhase.INTENT:
+                intents[iid] = {
+                    "intent_id": iid,
+                    "event_id": record.get("event_id", ""),
+                    "tool_name": record.get("tool_name", ""),
+                    "sequence_no": record.get("sequence_no", 0),
+                    "occurred_at": record.get("occurred_at", ""),
+                }
+            elif phase == EventPhase.TERMINAL:
+                terminals.add(iid)
+
+    return [v for k, v in intents.items() if k not in terminals]
 
 
 def recover_state_from_jsonl(path: str | Path) -> tuple[int, str]:

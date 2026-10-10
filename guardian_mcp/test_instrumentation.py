@@ -110,6 +110,12 @@ def test_event_is_recorded():
 
 
 def test_sequence_monotone():
+    """Les séquences des TERMINAL doivent être strictement croissantes.
+
+    R033-A : chaque appel produit INTENT + TERMINAL, donc les séquences des
+    TERMINAL sont [2, 4, 6, 8, 10] (les INTENT occupent les impairs).
+    L'invariant important est la monotonie stricte, pas la consécutivité.
+    """
     instr = make_instr()
     for i in range(5):
         instr.handle_tool_call(
@@ -117,7 +123,13 @@ def test_sequence_monotone():
             executor=ok_executor,
         )
     seqs = [e.sequence_no for e, _ in instr.get_events()]
-    assert seqs == [1, 2, 3, 4, 5]
+    # Vérification de la monotonie stricte (invariant fondamental)
+    assert len(seqs) == 5
+    for i in range(1, len(seqs)):
+        assert seqs[i] > seqs[i - 1], f"Séquence non monotone : {seqs}"
+    # R033-A : vérifier également que les séquences globales (INTENT+TERMINAL) sont continues
+    all_seqs = [e.sequence_no for e, _ in instr.get_all_events()]
+    assert all_seqs == list(range(1, 11)), f"Séquences globales attendues 1..10 : {all_seqs}"
 
 
 def test_executor_exception_produces_event():
@@ -199,7 +211,13 @@ def test_sha256_hex_longueur():
 
 
 def test_custom_event_sink():
-    """Le sink personnalisé reçoit bien l'événement et son hash."""
+    """Le sink personnalisé reçoit bien les événements et leurs hashes.
+
+    R033-A : un appel produit 2 événements (INTENT + TERMINAL).
+    Le sink est appelé 2 fois par handle_tool_call.
+    """
+    from guardian_mcp.instrumentation import EventPhase
+
     received = []
 
     def sink(event, event_hash):
@@ -210,8 +228,14 @@ def test_custom_event_sink():
         {"name": "blockchain.query", "arguments": {}},
         executor=ok_executor,
     )
-    assert len(received) == 1
+    # R033-A : 2 événements par appel (INTENT + TERMINAL)
+    assert len(received) == 2
     assert received[0][0].tool_name == "blockchain.query"
+    assert received[0][0].event_phase == EventPhase.INTENT
+    assert received[1][0].event_phase == EventPhase.TERMINAL
+    # Les deux partagent le même intent_id
+    assert received[0][0].intent_id == received[1][0].intent_id
+    assert received[0][0].intent_id != ""
 
 # ─── R026-001 — Fuite indirecte via exception ─────────────────────────────────
 # Ces tests vérifient qu'une exception contenant une sentinelle secrète
@@ -321,7 +345,7 @@ def test_r021_005_file_sink_persist_and_reload(tmp_path):
     ledger = tmp_path / "guardian_test.jsonl"
     sink = make_file_sink(ledger)
 
-    # Session 1 — écriture de 3 événements
+    # Session 1 — écriture de 3 appels
     instr = make_instr(event_sink=sink)
     instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
     instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
@@ -329,14 +353,14 @@ def test_r021_005_file_sink_persist_and_reload(tmp_path):
 
     assert ledger.exists(), "Le fichier JSONL doit exister après écriture"
 
-    # Vérifier que le fichier contient 3 lignes non vides
+    # R033-A : chaque appel produit 2 lignes (INTENT + TERMINAL) → 6 lignes pour 3 appels
     lines = [l for l in ledger.read_text().splitlines() if l.strip()]
-    assert len(lines) == 3, f"3 événements attendus dans le JSONL, trouvés : {len(lines)}"
+    assert len(lines) == 6, f"6 entrées attendues dans le JSONL (3 INTENT + 3 TERMINAL), trouvées : {len(lines)}"
 
     # Session 2 — rechargement et vérification (simule un redémarrage)
     result = load_and_verify_jsonl(ledger)
     assert result.is_pass(), f"Vérification après rechargement doit passer : {result.mismatches}"
-    assert result.entries_verified == 3
+    assert result.entries_verified == 6
     assert any("R021-005" in l for l in result.limits)
     assert any("R023-002" in l for l in result.limits)
 
@@ -364,16 +388,16 @@ def test_r023_002_parent_hash_chained(tmp_path):
     instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
     instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
 
+    # R033-A : 3 appels = 6 lignes (3 INTENT + 3 TERMINAL)
     lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
-    assert len(lines) == 3
+    assert len(lines) == 6, f"6 entrées attendues, trouvées : {len(lines)}"
 
-    # Vérifier le chaînage explicite
+    # Vérifier le chaînage explicite des 6 événements
     assert lines[0]["previous_event_hash"] == GENESIS_HASH, \
-        "Premier événement doit pointer vers GENESIS_HASH"
-    assert lines[1]["previous_event_hash"] == lines[0]["event_hash"], \
-        "Deuxième événement doit pointer vers le hash du premier"
-    assert lines[2]["previous_event_hash"] == lines[1]["event_hash"], \
-        "Troisième événement doit pointer vers le hash du deuxième"
+        "Première entrée (INTENT 1) doit pointer vers GENESIS_HASH"
+    for i in range(1, 6):
+        assert lines[i]["previous_event_hash"] == lines[i-1]["event_hash"], \
+            f"Entrée {i+1} doit pointer vers le hash de l'entrée {i}"
 
     # Vérification complète via load_and_verify_jsonl
     result = load_and_verify_jsonl(ledger)
@@ -430,13 +454,16 @@ def test_r023_002_reordering_detected(tmp_path):
 
 
 def test_r028_a_empty_journal_with_expected_count_fails(tmp_path):
-    """R028-A : un journal vide déclaré avec expected_count > 0 retourne FAIL."""
+    """R028-A : un journal vide déclaré avec expected_count > 0 retourne FAIL.
+
+    R033-A : 3 appels = 6 entrées (3 INTENT + 3 TERMINAL).
+    """
     from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
 
     ledger = tmp_path / "empty_test.jsonl"
     sink = make_file_sink(ledger)
 
-    # Écrire 3 événements
+    # Écrire 3 appels (→ 6 entrées JSONL)
     instr = make_instr(event_sink=sink)
     instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
     instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
@@ -445,7 +472,7 @@ def test_r028_a_empty_journal_with_expected_count_fails(tmp_path):
     # Vider intégralement le journal (simule une suppression/troncature totale)
     ledger.write_text("")
 
-    result = load_and_verify_jsonl(ledger, expected_count=3)
+    result = load_and_verify_jsonl(ledger, expected_count=6)
     assert not result.is_pass(), "Journal vidé doit être détecté quand expected_count est fourni"
     assert any("entries_count" in m.get("field", "") for m in result.mismatches)
 
@@ -477,14 +504,20 @@ def test_r028_a_expected_last_hash_mismatch_fails(tmp_path):
 
 def test_r028_b_resume_from_existing_journal(tmp_path):
     """R028-B : une nouvelle instance peut reprendre l'écriture dans un fichier
-    existant sans rompre la chaîne ni répéter les numéros de séquence."""
+    existant sans rompre la chaîne ni répéter les numéros de séquence.
+
+    R033-A : chaque appel produit INTENT + TERMINAL.
+    Session 1 = 2 appels = 4 entrées (séq. 1,2,3,4).
+    Session 2 = 2 appels = 4 entrées (séq. 5,6,7,8 après reprise).
+    Total = 8 entrées avec chaîne continue.
+    """
     from guardian_mcp.instrumentation import (
         load_and_verify_jsonl, make_file_sink, recover_state_from_jsonl,
     )
 
     ledger = tmp_path / "resume_test.jsonl"
 
-    # Session 1 — écrire 2 événements
+    # Session 1 — écrire 2 appels (→ 4 entrées JSONL, séq. 1..4)
     sink1 = make_file_sink(ledger)
     instr1 = make_instr(event_sink=sink1)
     instr1.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
@@ -492,10 +525,10 @@ def test_r028_b_resume_from_existing_journal(tmp_path):
 
     # Récupérer l'état depuis le journal (simule le redémarrage)
     last_seq, last_hash = recover_state_from_jsonl(ledger)
-    assert last_seq == 2
+    assert last_seq == 4, f"Dernier seq attendu = 4 (2 appels × 2 events), trouvé : {last_seq}"
     assert last_hash != "0" * 64, "Le hash récupéré ne doit pas être le genesis"
 
-    # Session 2 — reprendre avec l'état récupéré
+    # Session 2 — reprendre avec l'état récupéré (séq. 5..8)
     sink2 = make_file_sink(ledger)
     instr2 = make_instr(
         event_sink=sink2,
@@ -505,16 +538,16 @@ def test_r028_b_resume_from_existing_journal(tmp_path):
     instr2.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
     instr2.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
 
-    # Le journal contient maintenant 4 événements
-    result = load_and_verify_jsonl(ledger, expected_count=4)
+    # Le journal contient maintenant 8 entrées (4 sessions × 2 events)
+    result = load_and_verify_jsonl(ledger, expected_count=8)
     assert result.is_pass(), f"La chaîne après reprise doit être valide : {result.mismatches}"
-    assert result.entries_verified == 4
+    assert result.entries_verified == 8
 
-    # Les sequence_no de la session 2 doivent continuer (3, 4) et non recommencer (1, 2)
+    # Les sequence_no doivent être continus 1..8
     import json as _json
     lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
     seqs = [l["sequence_no"] for l in lines]
-    assert seqs == [1, 2, 3, 4], f"Les séquences doivent être continues : {seqs}"
+    assert seqs == list(range(1, 9)), f"Les séquences doivent être 1..8 : {seqs}"
 
 
 def test_r028_b_recover_state_empty_file(tmp_path):
@@ -611,7 +644,10 @@ def test_r030_002_recover_state_refuses_corrupted_journal(tmp_path):
 
 def test_r030_002_recover_state_accepts_valid_journal(tmp_path):
     """R030-002 : recover_state_from_jsonl accepte un journal valide
-    et retourne l'état correct."""
+    et retourne l'état correct.
+
+    R033-A : 3 appels = 6 entrées (séq. 1..6). Le dernier seq est 6.
+    """
     from guardian_mcp.instrumentation import make_file_sink, recover_state_from_jsonl
 
     ledger = tmp_path / "valid_recover.jsonl"
@@ -622,7 +658,7 @@ def test_r030_002_recover_state_accepts_valid_journal(tmp_path):
     instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
 
     last_seq, last_hash = recover_state_from_jsonl(ledger)
-    assert last_seq == 3
+    assert last_seq == 6, f"Dernier seq attendu = 6 (3 appels × 2 events), trouvé : {last_seq}"
     assert len(last_hash) == 64
     assert last_hash != "0" * 64
 
@@ -699,9 +735,13 @@ def test_r032_a_execution_status_failed_on_exception():
 
 
 def test_r032_a_execution_status_in_jsonl(tmp_path):
-    """R032-A : execution_status est persisté dans le fichier JSONL."""
+    """R032-A : execution_status est persisté dans le fichier JSONL.
+
+    R033-A : chaque appel produit INTENT + TERMINAL.
+    On filtre les TERMINAL pour vérifier execution_status.
+    """
     import json as _json
-    from guardian_mcp.instrumentation import make_file_sink
+    from guardian_mcp.instrumentation import EventPhase, make_file_sink
 
     ledger = tmp_path / "exec_status.jsonl"
     sink = make_file_sink(ledger)
@@ -709,14 +749,21 @@ def test_r032_a_execution_status_in_jsonl(tmp_path):
     instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
     instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
 
-    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
-    assert lines[0]["execution_status"] == "EXECUTED"   # ALLOW
-    assert lines[1]["execution_status"] == "NOT_EXECUTED"  # BLOCK
+    all_lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    # Filtrer uniquement les événements TERMINAL
+    terminals = [l for l in all_lines if l.get("event_phase") == EventPhase.TERMINAL]
+    assert len(terminals) == 2
+    assert terminals[0]["execution_status"] == "EXECUTED"     # ALLOW → EXECUTED
+    assert terminals[1]["execution_status"] == "NOT_EXECUTED" # BLOCK → NOT_EXECUTED
 
 
 def test_r032_b_file_lock_prevents_interleaving(tmp_path):
     """R032-B : le verrou fichier empêche l'entrelacement des écritures
-    depuis plusieurs threads (proxy pour multiprocessus sur même fichier)."""
+    depuis plusieurs threads (proxy pour multiprocessus sur même fichier).
+
+    R033-A : chaque appel produit 2 entrées (INTENT + TERMINAL).
+    3 threads × 5 appels × 2 entrées = 30 lignes JSONL.
+    """
     import threading
     from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
 
@@ -727,7 +774,7 @@ def test_r032_b_file_lock_prevents_interleaving(tmp_path):
         sink = make_file_sink(ledger)
         instr = make_instr(
             event_sink=sink,
-            initial_seq=(n - 1) * 5,
+            initial_seq=(n - 1) * 10,  # 5 appels × 2 events = 10 seq par thread
             initial_prev_hash=None,
         )
         for _ in range(5):
@@ -747,10 +794,10 @@ def test_r032_b_file_lock_prevents_interleaving(tmp_path):
 
     assert not errors, f"Erreurs pendant l'écriture concurrente : {errors}"
 
-    # Le fichier doit contenir exactement 15 lignes JSONL valides
+    # R033-A : 3 threads × 5 appels × 2 events = 30 lignes JSONL valides
     lines = [l for l in ledger.read_text().splitlines() if l.strip()]
-    assert len(lines) == 15, f"15 lignes attendues, trouvées : {len(lines)}"
-    # Toutes les lignes doivent être du JSON valide
+    assert len(lines) == 30, f"30 lignes attendues (3×5×2), trouvées : {len(lines)}"
+    # Toutes les lignes doivent être du JSON valide (pas d'entrelacement)
     import json as _json
     for i, line in enumerate(lines):
         try:
@@ -785,3 +832,413 @@ def test_r032_c_is_replay_in_canonical_dict():
         "Un événement de replay doit avoir un hash différent de l'événement réel"
     )
 
+
+# ─── R033-A — Intent/Terminal events ─────────────────────────────────────────
+
+
+def test_r033_a_intent_event_emitted_before_terminal():
+    """R033-A : chaque handle_tool_call émet un INTENT avant le TERMINAL."""
+    from guardian_mcp.instrumentation import EventPhase
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+
+    all_events = instr.get_all_events()
+    assert len(all_events) == 2, f"2 events attendus (INTENT+TERMINAL), trouvés : {len(all_events)}"
+
+    intent_evt, _ = all_events[0]
+    terminal_evt, _ = all_events[1]
+
+    assert intent_evt.event_phase == EventPhase.INTENT
+    assert terminal_evt.event_phase == EventPhase.TERMINAL
+    assert intent_evt.intent_id == terminal_evt.intent_id
+    assert intent_evt.intent_id != ""
+    # Le terminal a le hash de l'intent comme previous_event_hash
+    assert terminal_evt.sequence_no == intent_evt.sequence_no + 1
+
+
+def test_r033_a_intent_output_summary_is_intent():
+    """R033-A : l'INTENT porte output_summary='INTENT' et execution_status='NOT_EXECUTED'."""
+    from guardian_mcp.instrumentation import EventPhase
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    intent_evt, _ = instr.get_all_events()[0]
+    assert intent_evt.output_summary == "INTENT"
+    assert intent_evt.execution_status == "NOT_EXECUTED"
+
+
+def test_r033_a_terminal_carries_real_execution_result():
+    """R033-A : le TERMINAL porte le vrai résultat (EXECUTED, output_summary réel)."""
+    from guardian_mcp.instrumentation import EventPhase
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    terminal_evt, _ = instr.get_events()[-1]
+    assert terminal_evt.event_phase == EventPhase.TERMINAL
+    assert terminal_evt.execution_status == "EXECUTED"
+    assert terminal_evt.output_summary != "INTENT"
+
+
+def test_r033_a_intent_in_canonical_dict():
+    """R033-A : event_phase et intent_id sont dans le corps canonique → hash distinct."""
+    from dataclasses import replace as dc_replace
+    from guardian_mcp.instrumentation import EventPhase
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    intent_evt, intent_hash = instr.get_all_events()[0]
+    terminal_evt, terminal_hash = instr.get_all_events()[1]
+
+    # Même contenu, phase différente → hash différent
+    assert intent_hash != terminal_hash, "INTENT et TERMINAL avec le même tool_name doivent avoir des hashes distincts"
+    # Vérification directe via to_canonical_dict
+    assert intent_evt.to_canonical_dict()["event_phase"] == EventPhase.INTENT
+    assert terminal_evt.to_canonical_dict()["event_phase"] == EventPhase.TERMINAL
+
+
+def test_r033_a_intent_persisted_in_jsonl(tmp_path):
+    """R033-A : les événements INTENT sont persistés dans le JSONL avec event_phase correct."""
+    import json as _json
+    from guardian_mcp.instrumentation import EventPhase, make_file_sink
+
+    ledger = tmp_path / "intent_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = [_json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    assert len(lines) == 2
+    assert lines[0]["event_phase"] == EventPhase.INTENT
+    assert lines[1]["event_phase"] == EventPhase.TERMINAL
+    assert lines[0]["intent_id"] == lines[1]["intent_id"]
+    assert lines[0]["intent_id"] != ""
+
+
+def test_r033_a_block_emits_intent_and_terminal():
+    """R033-A : un appel BLOCK émet aussi INTENT + TERMINAL (NOT_EXECUTED pour les deux)."""
+    from guardian_mcp.instrumentation import EventPhase
+
+    instr = make_instr()
+    instr.handle_tool_call({"name": "wallet.sign", "arguments": {}}, executor=ok_executor)
+
+    all_events = instr.get_all_events()
+    assert len(all_events) == 2
+    intent_evt, _ = all_events[0]
+    terminal_evt, _ = all_events[1]
+    assert intent_evt.event_phase == EventPhase.INTENT
+    assert terminal_evt.event_phase == EventPhase.TERMINAL
+    assert terminal_evt.execution_status == "NOT_EXECUTED"
+
+
+# ─── R033-B — Barrière physique en mode replay ────────────────────────────────
+
+
+def test_r033_b_replay_never_calls_executor():
+    """R033-B : en mode replay, l'exécuteur réel n'est JAMAIS appelé.
+    La barrière est physique — le flag is_replay=True bloque l'appel avant
+    que le code d'exécution soit atteint."""
+    executor_called = []
+
+    def sentinel_executor(params):
+        executor_called.append(params)
+        return {"isError": False, "content": [{"type": "text", "text": "real_result"}]}
+
+    instr = make_instr()
+    result = instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {"block": 42}},
+        executor=sentinel_executor,
+        is_replay=True,
+    )
+
+    assert len(executor_called) == 0, (
+        "L'exécuteur ne doit JAMAIS être appelé en mode replay — "
+        f"appelé {len(executor_called)} fois"
+    )
+    assert "execution suppressed" in result.get("content", [{}])[0].get("text", ""), (
+        "La réponse doit indiquer que l'exécution est supprimée en replay"
+    )
+
+
+def test_r033_b_replay_events_carry_is_replay_true():
+    """R033-B : tous les événements produits en mode replay portent is_replay=True."""
+    instr = make_instr()
+    instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=ok_executor,
+        is_replay=True,
+    )
+
+    for evt, _ in instr.get_all_events():
+        assert evt.is_replay is True, (
+            f"Événement {evt.event_id} doit avoir is_replay=True en mode replay"
+        )
+
+
+def test_r033_b_replay_block_also_suppressed():
+    """R033-B : un appel BLOCK en mode replay produit aussi is_replay=True."""
+    instr = make_instr()
+    instr.handle_tool_call(
+        {"name": "wallet.sign", "arguments": {}},
+        executor=ok_executor,
+        is_replay=True,
+    )
+    terminal_evt, _ = instr.get_events()[-1]
+    assert terminal_evt.is_replay is True
+    assert terminal_evt.execution_status == "NOT_EXECUTED"
+
+
+def test_r033_b_replay_has_different_hash_than_real():
+    """R033-B : un événement replay a un hash différent du même événement réel
+    car is_replay est dans le corps canonique."""
+    from dataclasses import replace as dc_replace
+
+    instr_real = make_instr()
+    instr_real.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    _, hash_real = instr_real.get_events()[-1]
+
+    instr_replay = make_instr()
+    instr_replay.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=ok_executor,
+        is_replay=True,
+    )
+    _, hash_replay = instr_replay.get_events()[-1]
+
+    assert hash_real != hash_replay, (
+        "Un événement replay doit avoir un hash différent de son équivalent réel"
+    )
+
+
+def test_r033_b_non_replay_still_calls_executor():
+    """R033-B (inverse) : sans is_replay, l'exécuteur est bien appelé."""
+    executor_called = []
+
+    def counting_executor(params):
+        executor_called.append(params)
+        return {"isError": False, "content": [{"type": "text", "text": "ok"}]}
+
+    instr = make_instr()
+    instr.handle_tool_call(
+        {"name": "blockchain.query", "arguments": {}},
+        executor=counting_executor,
+    )
+
+    assert len(executor_called) == 1, (
+        "L'exécuteur doit être appelé exactement une fois sans replay"
+    )
+
+
+# ─── R033-C — Tests multiprocessus réels ─────────────────────────────────────
+
+
+def test_r033_c_multiprocess_file_lock(tmp_path):
+    """R033-C : plusieurs processus indépendants (subprocess) écrivent dans le même
+    fichier JSONL sans corrompre la chaîne JSON.
+
+    Chaque sous-processus écrit 3 appels (6 lignes) via make_file_sink.
+    4 processus × 6 lignes = 24 lignes au total.
+    Toutes les lignes doivent être du JSON valide (pas d'entrelacement).
+    """
+    import json as _json
+    import subprocess
+    import sys
+
+    ledger = tmp_path / "mp_test.jsonl"
+
+    # Script inline : chaque sous-processus crée son propre sink et écrit 3 appels
+    worker_script = f"""
+import sys
+sys.path.insert(0, {repr(str(__import__('pathlib').Path(__file__).parent.parent))})
+from guardian_mcp.instrumentation import GuardianMCPInstrumentation, make_file_sink
+sink = make_file_sink({repr(str(ledger))})
+instr = GuardianMCPInstrumentation(
+    agent_id="agent:worker",
+    session_id="session:test",
+    run_id="run:test",
+    event_sink=sink,
+)
+for _ in range(3):
+    instr.handle_tool_call(
+        {{"name": "blockchain.query", "arguments": {{}}}},
+        executor=lambda p: {{"isError": False, "content": [{{"type": "text", "text": "ok"}}]}},
+    )
+"""
+
+    procs = [
+        subprocess.Popen([sys.executable, "-c", worker_script])
+        for _ in range(4)
+    ]
+    for p in procs:
+        ret = p.wait(timeout=30)
+        assert ret == 0, f"Processus terminé avec code {ret}"
+
+    # Vérifier que toutes les lignes sont du JSON valide (pas d'entrelacement)
+    lines = [l for l in ledger.read_text().splitlines() if l.strip()]
+    assert len(lines) == 24, f"4 processus × 3 appels × 2 events = 24 lignes, trouvées : {len(lines)}"
+
+    for i, line in enumerate(lines):
+        try:
+            _json.loads(line)
+        except Exception as e:
+            assert False, f"Ligne {i+1} JSON invalide (entrelacement multiprocessus) : {e}"
+
+
+# ─── R033-D — Vérification chaîne complète ───────────────────────────────────
+
+
+def test_r033_d_deletion_of_intent_detected(tmp_path):
+    """R033-D : la suppression d'un événement INTENT dans la chaîne est détectée.
+
+    La suppression d'une ligne rompt le chaînage previous_event_hash
+    de l'entrée suivante.
+    """
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "delete_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Supprimer la 2e ligne (TERMINAL du 1er appel)
+    lines = ledger.read_text().splitlines()
+    del lines[1]
+    ledger.write_text("\n".join(lines) + "\n")
+
+    result = load_and_verify_jsonl(ledger)
+    assert not result.is_pass(), "La suppression d'une entrée doit être détectée"
+    assert any(m["field"] == "previous_event_hash" for m in result.mismatches), (
+        f"Doit avoir un mismatch previous_event_hash : {result.mismatches}"
+    )
+
+
+def test_r033_d_duplication_detected_via_expected_count(tmp_path):
+    """R033-D : la duplication d'une ligne est détectable si expected_count est fourni."""
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "dup_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    lines = ledger.read_text().splitlines()
+    original_count = len(lines)  # 2
+
+    # Dupliquer la dernière ligne
+    lines.append(lines[-1])
+    ledger.write_text("\n".join(lines) + "\n")
+
+    result = load_and_verify_jsonl(ledger, expected_count=original_count)
+    assert not result.is_pass(), "La duplication doit être détectée via expected_count"
+    assert any("entries_count" in m.get("field", "") for m in result.mismatches)
+
+
+def test_r033_d_sequence_regression_detected(tmp_path):
+    """R033-D : une insertion d'événement avec une séquence non-monotone est détectée."""
+    import json as _json
+    from guardian_mcp.instrumentation import load_and_verify_jsonl, make_file_sink
+
+    ledger = tmp_path / "seq_reg_test.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Lire, modifier la sequence_no d'une entrée pour créer une régression
+    lines = ledger.read_text().splitlines()
+    rec = _json.loads(lines[2])  # 3e ligne (INTENT du 2e appel)
+    rec["sequence_no"] = 1       # régression : 1 < 2
+    lines[2] = _json.dumps(rec, separators=(",", ":"), sort_keys=True)
+    ledger.write_text("\n".join(lines) + "\n")
+
+    result = load_and_verify_jsonl(ledger)
+    # La régression de séquence doit être détectée
+    assert not result.is_pass(), "Une régression de séquence doit être détectée"
+
+
+# ─── R033-E — Reprise après incident — IN_DOUBT ───────────────────────────────
+
+
+def test_r033_e_no_in_doubt_on_complete_journal(tmp_path):
+    """R033-E : un journal complet (tous les INTENT ont leur TERMINAL)
+    ne produit aucun IN_DOUBT."""
+    from guardian_mcp.instrumentation import find_in_doubt_intents, make_file_sink
+
+    ledger = tmp_path / "complete.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    in_doubt = find_in_doubt_intents(ledger)
+    assert in_doubt == [], f"Aucun IN_DOUBT attendu, trouvés : {in_doubt}"
+
+
+def test_r033_e_in_doubt_detected_on_truncated_terminal(tmp_path):
+    """R033-E : un journal tronqué après l'INTENT (sans TERMINAL) est classé IN_DOUBT.
+
+    Simule un crash entre la journalisation de l'INTENT et celle du TERMINAL.
+    """
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        EventPhase, find_in_doubt_intents, make_file_sink,
+    )
+
+    ledger = tmp_path / "truncated.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    # Appel 1 complet
+    instr.handle_tool_call({"name": "blockchain.query", "arguments": {}}, executor=ok_executor)
+    # Appel 2 dont seul l'INTENT doit rester
+    instr.handle_tool_call({"name": "memory.read", "arguments": {}}, executor=ok_executor)
+
+    # Supprimer la dernière ligne (TERMINAL du 2e appel) pour simuler un crash
+    lines = ledger.read_text().splitlines()
+    assert _json.loads(lines[-1])["event_phase"] == EventPhase.TERMINAL
+    lines = lines[:-1]  # enlever le dernier TERMINAL
+    ledger.write_text("\n".join(lines) + "\n")
+
+    in_doubt = find_in_doubt_intents(ledger)
+    assert len(in_doubt) == 1, f"1 IN_DOUBT attendu, trouvés : {in_doubt}"
+    assert in_doubt[0]["tool_name"] == "memory.read"
+
+
+def test_r033_e_in_doubt_multiple_crashes(tmp_path):
+    """R033-E : plusieurs INTENT orphelins sont tous détectés comme IN_DOUBT."""
+    import json as _json
+    from guardian_mcp.instrumentation import (
+        EventPhase, find_in_doubt_intents, make_file_sink,
+    )
+
+    ledger = tmp_path / "multi_crash.jsonl"
+    sink = make_file_sink(ledger)
+    instr = make_instr(event_sink=sink)
+    instr.handle_tool_call({"name": "tool.a", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "tool.b", "arguments": {}}, executor=ok_executor)
+    instr.handle_tool_call({"name": "tool.c", "arguments": {}}, executor=ok_executor)
+
+    # Supprimer les 2 derniers TERMINAL (simulation de 2 crashes)
+    lines = ledger.read_text().splitlines()
+    # Lignes : [I1, T1, I2, T2, I3, T3] — retirer T2 et T3
+    lines_filtered = [
+        l for i, l in enumerate(lines)
+        if not (i in (3, 5))  # indices T2=3, T3=5
+    ]
+    ledger.write_text("\n".join(lines_filtered) + "\n")
+
+    in_doubt = find_in_doubt_intents(ledger)
+    assert len(in_doubt) == 2, f"2 IN_DOUBT attendus, trouvés : {len(in_doubt)}"
+    tool_names = {e["tool_name"] for e in in_doubt}
+    assert "tool.b" in tool_names and "tool.c" in tool_names
+
+
+def test_r033_e_in_doubt_nonexistent_file():
+    """R033-E : find_in_doubt_intents sur un fichier inexistant retourne []."""
+    from guardian_mcp.instrumentation import find_in_doubt_intents
+    result = find_in_doubt_intents("/tmp/ghost_r033e.jsonl")
+    assert result == []

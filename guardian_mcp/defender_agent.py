@@ -182,17 +182,22 @@ class DefenderAgent:
         3. Vérification que previous_event_hash de chaque événement correspond
            au event_hash de l'événement précédent dans la liste.
 
+        R033-A : on utilise get_all_events() (INTENT + TERMINAL) pour que le
+        chaînage cryptographique soit vérifié sur la chaîne complète. Les TERMINAL
+        pointent vers leurs INTENT précédents.
+
         Limite : ces contrôles s'exécutent en mémoire sur la session courante.
         Pour la persistance durable après redémarrage, utiliser
         make_file_sink() + load_and_verify_jsonl() (R021-005).
         """
         from guardian_mcp.instrumentation import GENESIS_HASH
 
-        events = self._instrumentation.get_events()
+        # R033-A : chaîne complète INTENT+TERMINAL pour le chaînage parent-hash
+        all_events = self._instrumentation.get_all_events()
         mismatches = []
 
         # Vérification 1 : hashes individuels
-        for event, stored_hash in events:
+        for event, stored_hash in all_events:
             recomputed = event.compute_hash()
             if recomputed != stored_hash:
                 mismatches.append({
@@ -204,7 +209,7 @@ class DefenderAgent:
 
         # Vérification 2 : monotonie des sequence_no (R021-002)
         prev_seq = 0
-        for event, _ in events:
+        for event, _ in all_events:
             if event.sequence_no <= prev_seq:
                 mismatches.append({
                     "event_id": event.event_id,
@@ -216,7 +221,7 @@ class DefenderAgent:
 
         # Vérification 3 : chaînage parent-hash (R023-002)
         prev_hash = GENESIS_HASH
-        for event, stored_hash in events:
+        for event, stored_hash in all_events:
             if event.previous_event_hash != prev_hash:
                 mismatches.append({
                     "event_id": event.event_id,
@@ -227,10 +232,12 @@ class DefenderAgent:
             prev_hash = stored_hash
 
         verdict = "PASS" if not mismatches else "FAIL"
+        # events_replayed = nombre d'appels (TERMINAL count)
+        terminal_count = sum(1 for e, _ in all_events if e.event_phase == "TERMINAL")
         return ReplayResult(
             level="R0",
             verdict=verdict,
-            events_replayed=len(events),
+            events_replayed=terminal_count,
             mismatches=mismatches,
             limits=[
                 "R0 vérifie les hashes individuels, la monotonie des séquences et le chaînage parent-hash en mémoire",
@@ -251,7 +258,7 @@ class DefenderAgent:
         Ce n'est plus une vérification de hash non vide — c'est une
         vérification d'un identifiant de preuve distinct.
         """
-        events = self._instrumentation.get_events()
+        events = self._instrumentation.get_events()  # TERMINAL seulement pour R1
         # Appliquer d'abord R0
         r0 = self.verify_chain_r0()
         mismatches = list(r0.mismatches)
@@ -313,7 +320,15 @@ class DefenderAgent:
     # ------------------------------------------------------------------
 
     def get_all_events(self) -> list[tuple[MCPToolEvent, str]]:
-        """Tous les événements MCP Guardian enregistrés."""
+        """Tous les événements MCP Guardian enregistrés (INTENT + TERMINAL).
+
+        R033-A : retourne la chaîne complète via get_all_events().
+        Pour les TERMINAL seuls, utiliser get_terminal_events().
+        """
+        return self._instrumentation.get_all_events()
+
+    def get_terminal_events(self) -> list[tuple[MCPToolEvent, str]]:
+        """Événements TERMINAL uniquement (un par appel handle_tool_call)."""
         return self._instrumentation.get_events()
 
     def get_evidence_registry(self) -> dict[str, str]:

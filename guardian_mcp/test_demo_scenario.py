@@ -240,7 +240,10 @@ def test_d4_11_two_runs_no_cross_contamination():
 
     assert d2.executor_call_count == 0
     assert len(d2.get_all_events()) == 0
-    assert len(d1.get_all_events()) == 2
+    # R033-A : 2 appels × 2 events (INTENT+TERMINAL) = 4 événements total
+    assert len(d1.get_all_events()) == 4
+    # Mais 2 appels métier (TERMINAL uniquement)
+    assert len(d1.get_terminal_events()) == 2
 
 
 # ─── D4-nouveau — Contexte bien interpolé dans le payload (R021-004) ─────────
