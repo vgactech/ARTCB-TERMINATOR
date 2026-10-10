@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Activity, Bell, CircleCheck, Play, ShieldCheck } from 'lucide-react'
+import { Activity, CircleCheck, Play, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
 import { EventTimeline } from './components/EventTimeline'
 import { OrchestrationProof } from './components/OrchestrationProof'
@@ -79,13 +79,6 @@ function App() {
             <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300"><ShieldCheck size={23} aria-hidden="true" /></div>
             <div><p className="text-sm font-semibold tracking-[0.12em] text-white">ARTCB TERMINATOR</p><p className="text-[11px] text-slate-500">Guardian Security Console</p></div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-slate-300 sm:flex">
-              <span className={`size-1.5 rounded-full ${engineState === 'online' ? 'animate-pulse bg-emerald-300' : engineState === 'offline' ? 'bg-rose-400' : 'animate-pulse bg-amber-300'}`} />
-              {engineState === 'online' ? 'Engine online' : engineState === 'offline' ? 'Engine offline' : 'Checking engine'}
-            </span>
-            <button type="button" className="rounded-xl border border-white/8 p-2.5 text-slate-400 transition hover:text-white focus-visible:outline-2 focus-visible:outline-emerald-300" aria-label="Notifications"><Bell size={18} /></button>
-          </div>
         </div>
       </header>
 
@@ -121,7 +114,7 @@ function App() {
 
         <section className="mt-6 grid gap-6 lg:grid-cols-[1.65fr_1fr]">
           <article className="min-h-96 rounded-2xl border border-white/8 bg-slate-950/55 p-4 sm:p-6">
-            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div><button type="button" disabled={!result} onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10 disabled:opacity-30"><Activity size={15} aria-hidden="true" /> Open graph</button></div>
+            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-white">Four-agent execution trace</p><p className="mt-1 text-xs text-slate-500">Backend-reported orchestration path</p></div>{result && <button type="button" onClick={() => setGraphOpen(true)} className="flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-xs text-cyan-300 transition hover:bg-cyan-400/10"><Activity size={15} aria-hidden="true" /> View execution graph</button>}</div>
             <AgentFlow activeAgent={activeAgent} running={running} stages={result?.agents} />
             <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs"><span className="text-slate-500">Protected execution boundary</span><span className="font-mono text-emerald-300">4 NODES · READY</span></div>
           </article>
