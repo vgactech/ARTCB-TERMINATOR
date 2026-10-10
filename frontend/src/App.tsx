@@ -7,6 +7,7 @@ import {
   Radar,
   ShieldCheck,
 } from 'lucide-react'
+import { AgentFlow } from './components/AgentFlow'
 
 const metrics = [
   { label: 'System status', value: 'Protected', detail: 'All controls active', tone: 'emerald' },
@@ -90,8 +91,10 @@ function App() {
               </div>
               <Activity size={18} className="text-emerald-300" />
             </div>
-            <div className="grid min-h-72 place-items-center rounded-xl border border-dashed border-white/8 bg-white/[0.015] text-sm text-slate-600">
-              Agent visualization will appear here
+            <AgentFlow />
+            <div className="mt-5 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3 text-xs">
+              <span className="text-slate-500">Protected execution boundary</span>
+              <span className="font-mono text-emerald-300">4 NODES · READY</span>
             </div>
           </article>
 
