@@ -10,11 +10,11 @@ client = TestClient(app)
 def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "service": "artcb-terminator-api",
-        "engine": "guardian",
-    }
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["service"] == "artcb-terminator-api"
+    assert data["engine"] == "guardian"
+    assert data["title"] == "ARTCB TERMINATOR FORENSIC"
 
 
 def test_run_simulation() -> None:
@@ -68,7 +68,8 @@ def test_policy_scenarios_use_guardian(
     assert all(event["parent_valid"] for event in result["events"])
     assert bool(result["evidence_id"]) is (decision == "BLOCK")
     assert result["tamper_verification"]["verdict"] == "FAIL"
-    assert len(result["tamper_verification"]["mismatches"]) == 1
+    assert len(result["tamper_verification"]["alterations_detected"]) == 1
+    assert result["tamper_verification"]["alterations_detected"][0]["detection"] == "ALTERATION_DETECTED"
     assert result["tamper_verification"]["original_archive_unchanged"] is True
     assert result["distinct_agent_count"] == 4
     assert [agent["role"] for agent in result["agents"]] == [
@@ -909,3 +910,55 @@ def test_stream_done_event_has_chain_scope(
     assert done_data["chain_verification"].get("chain_scope") == "defender_events", (
         "chain_scope must be 'defender_events' — R041 explicit scope documentation"
     )
+
+
+# ─── R044 — ARTCB MCP bridge tests ────────────────────────────────────────────
+
+
+def test_artcb_status_route_returns_200() -> None:
+    """GET /api/artcb/status always returns 200 (never raises)."""
+    response = client.get("/api/artcb/status")
+    assert response.status_code == 200
+
+
+def test_artcb_status_offline_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a reachable ARTCB server the bridge reports available=False."""
+    monkeypatch.setenv("ARTCB_API_URL", "http://127.0.0.1:19999")  # nothing listening
+    response = client.get("/api/artcb/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["available"] is False
+    assert "error" in data
+
+
+def test_artcb_bridge_health_structure() -> None:
+    """ArtcbMcpBridge.health() returns the expected keys even when offline."""
+    from guardian_mcp.artcb_bridge import ArtcbMcpBridge
+    bridge = ArtcbMcpBridge()
+    result = bridge.health()
+    assert "available" in result
+    assert "api_url" in result
+    assert "tools" in result
+    assert isinstance(result["tools"], list)
+    assert "tool_count" in result
+
+
+def test_artcb_bridge_is_available_false_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ArtcbMcpBridge.is_available() returns False when server is unreachable."""
+    monkeypatch.setenv("ARTCB_API_URL", "http://127.0.0.1:19999")
+    from guardian_mcp.artcb_bridge import ArtcbMcpBridge
+    bridge = ArtcbMcpBridge()
+    assert bridge.is_available() is False
+
+
+def test_artcb_bridge_call_tool_raises_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ArtcbMcpBridge.call_tool() raises RuntimeError when server is unreachable."""
+    monkeypatch.setenv("ARTCB_API_URL", "http://127.0.0.1:19999")
+    from guardian_mcp.artcb_bridge import ArtcbMcpBridge
+    bridge = ArtcbMcpBridge()
+    with pytest.raises(RuntimeError, match="unreachable|ARTCB|HTTP"):
+        bridge.call_tool("artcb_chain_verify", {})

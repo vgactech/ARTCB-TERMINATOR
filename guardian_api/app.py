@@ -108,7 +108,16 @@ def health() -> dict[str, str]:
         "status": "ok",
         "service": "artcb-terminator-api",
         "engine": "guardian",
+        "title": "ARTCB TERMINATOR FORENSIC",
     }
+
+
+@app.get("/api/artcb/status")
+def artcb_status() -> dict[str, Any]:
+    """Return ARTCB MCP bridge health — never raises, always returns a status dict."""
+    from guardian_mcp.artcb_bridge import ArtcbMcpBridge
+    bridge = ArtcbMcpBridge()
+    return bridge.health()
 
 
 @app.post("/api/simulation/run")
@@ -559,14 +568,20 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
         })
         previous_hash = stored_hash
 
+    # Tamper-detection demo: simulate an adversary replacing the first event hash
+    # with zeros to prove Guardian detects the alteration.
+    # "verdict: FAIL" = alteration detected (correct behaviour).
+    # "original_archive_unchanged: true" = real archive is untouched.
     tampered_events = [dict(event) for event in serialized_events]
-    tampered_events[0]["event_hash"] = "0" * 64
-    tamper_mismatches = [
+    if tampered_events:
+        tampered_events[0]["event_hash"] = "0" * 64
+    tamper_detected = [
         {
             "event_id": event["event_id"],
             "field": "event_hash",
-            "expected": stored[1],
-            "actual": event["event_hash"],
+            "stored_hash": stored[1],
+            "simulated_alteration": event["event_hash"],
+            "detection": "ALTERATION_DETECTED",
         }
         for event, stored in zip(tampered_events, events)
         if event["event_hash"] != stored[1]
@@ -612,9 +627,11 @@ def run_policy_scenario(scenario_id: str) -> dict[str, Any]:
         },
         "tamper_verification": {
             "level": "R0",
-            "verdict": "FAIL" if tamper_mismatches else "PASS",
+            # FAIL = alteration was detected by Guardian (correct — this is the demo)
+            "verdict": "FAIL" if tamper_detected else "PASS",
+            "description": "Simulates adversary replacing event_hash[0] with zeros. FAIL = Guardian detected the alteration.",
             "events_replayed": len(tampered_events),
-            "mismatches": tamper_mismatches,
+            "alterations_detected": tamper_detected,
             "original_archive_unchanged": all(
                 event["event_hash"] == stored[1]
                 for event, stored in zip(serialized_events, events)

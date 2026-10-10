@@ -2,8 +2,11 @@ import { motion } from 'framer-motion'
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Activity, CircleCheck, Play, ShieldCheck } from 'lucide-react'
 import { AgentFlow } from './components/AgentFlow'
+import { ForensicPanel } from './components/ForensicPanel'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
 import type { PolicyScenario, PolicyScenarioResult } from './api/guardian'
+import { phaseFromResult, phaseFromAgentIndex } from './forensic/phases'
+import type { ForensicPhase } from './forensic/phases'
 
 const ExecutionGraphOverlay = lazy(() =>
   import('./components/ExecutionGraphOverlay').then((module) => ({ default: module.ExecutionGraphOverlay })),
@@ -25,6 +28,7 @@ function App() {
   const [apiError, setApiError] = useState('')
   const [graphOpen, setGraphOpen] = useState(false)
   const [engineState, setEngineState] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [forensicPhase, setForensicPhase] = useState<ForensicPhase>('idle')
   const completed = activeAgent === 4 && result !== null
 
   useEffect(() => {
@@ -40,6 +44,7 @@ function App() {
     setResult(null)
     setApiError('')
     setActiveAgent(-1)
+    setForensicPhase('scenario_start')
     setRunning(true)
     setGraphOpen(true)
     try {
@@ -48,13 +53,16 @@ function App() {
       setEngineState('online')
       for (const stage of nextResult.agents) {
         setActiveAgent(stage.index)
+        setForensicPhase(phaseFromAgentIndex(stage.index, nextResult.decision))
         await new Promise((resolve) => window.setTimeout(resolve, 450))
       }
       setActiveAgent(4)
+      setForensicPhase(phaseFromResult(nextResult))
       setRunning(false)
     } catch (error) {
       setRunning(false)
       setActiveAgent(-1)
+      setForensicPhase('verification_incomplete')
       setEngineState('offline')
       setApiError(error instanceof Error ? error.message : 'Guardian simulation failed.')
     }
@@ -73,7 +81,7 @@ function App() {
         <div className="mx-auto flex h-18 max-w-7xl items-center justify-between px-5 lg:px-8">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300"><ShieldCheck size={23} aria-hidden="true" /></div>
-            <div><p className="text-sm font-semibold tracking-[0.12em] text-white">ARTCB TERMINATOR</p><p className="text-[11px] text-slate-500">Guardian Security Console</p></div>
+            <div><p className="text-sm font-semibold tracking-[0.12em] text-white">ARTCB TERMINATOR FORENSIC</p><p className="text-[11px] text-slate-500">Guardian Forensic Security Console</p></div>
           </div>
         </div>
       </header>
@@ -114,6 +122,10 @@ function App() {
 
         <section className="mt-6 grid gap-4 md:grid-cols-3">
           {metrics.map((metric, index) => <motion.article key={metric.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.08 }} className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"><div className="flex items-start justify-between"><p className="text-sm text-slate-500">{metric.label}</p><CircleCheck size={17} className={metric.iconClass} aria-hidden="true" /></div><p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p></motion.article>)}
+        </section>
+
+        <section className="mt-6">
+          <ForensicPanel phase={forensicPhase} result={result} running={running} />
         </section>
 
         <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">ARTCB TERMINATOR · Guardian Security Console</footer>
