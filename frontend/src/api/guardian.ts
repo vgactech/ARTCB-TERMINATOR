@@ -33,6 +33,48 @@ export type SimulationReport = {
   tampering_detected: boolean
 }
 
+export type PolicyScenario = {
+  id: string
+  name: string
+  description: string
+  risk: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+}
+
+export type GuardianEvent = {
+  event_id: string
+  event_phase: 'INTENT' | 'TERMINAL'
+  sequence_no: number
+  decision: 'ALLOW' | 'BLOCK' | 'REDACT' | 'ESCALATE'
+  decision_reason: string
+  execution_status: string
+  tool_name: string
+  event_hash: string
+  previous_event_hash: string
+  hash_valid: boolean
+  parent_valid: boolean
+}
+
+export type PolicyScenarioResult = {
+  scenario: PolicyScenario
+  session_id: string
+  run_id: string
+  decision: GuardianEvent['decision']
+  reason: string
+  tool_name: string
+  execution_status: string
+  tool_was_executed: boolean
+  evidence_id: string | null
+  guardian_event_id: string
+  intent_id: string
+  events: GuardianEvent[]
+  chain_verification: {
+    level: string
+    verdict: 'PASS' | 'FAIL'
+    events_replayed: number
+    mismatches: string[]
+  }
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? ''
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -63,4 +105,12 @@ export function checkGuardianHealth() {
 
 export function runGuardianSimulation() {
   return request<SimulationReport>('/api/simulation/run', { method: 'POST' })
+}
+
+export function listGuardianScenarios() {
+  return request<PolicyScenario[]>('/api/scenarios')
+}
+
+export function runGuardianScenario(scenarioId: string) {
+  return request<PolicyScenarioResult>(`/api/scenarios/${scenarioId}/run`, { method: 'POST' })
 }
