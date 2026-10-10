@@ -39,12 +39,12 @@ export function AgentFlow({ activeAgent, running, stages = [] }: AgentFlowProps)
                 <Icon size={21} aria-hidden="true" />
               </div>
               <div className="mt-5 flex items-center gap-2">
-                <span className="font-mono text-[10px] font-semibold text-slate-600">AGENT {agent.id}</span>
+                <span className="font-mono text-xs font-semibold text-slate-500">AGENT {agent.id}</span>
                 <span className={`size-1.5 rounded-full ${activeAgent >= index ? 'bg-emerald-400' : 'bg-slate-700'}`} />
               </div>
-              <h3 className="mt-1 text-sm font-semibold text-white">{agent.name}</h3>
-              <p className="mt-1 text-[11px] leading-4 text-slate-500">{stage?.id ?? agent.role}</p>
-              {stage && <p className="mt-2 truncate font-mono text-[9px] text-emerald-400" title={stage.artifact_id}>{stage.status} · {stage.events} EVENT{stage.events === 1 ? '' : 'S'}</p>}
+              <h3 className="mt-1 text-base font-semibold text-white">{agent.name}</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{stage?.id ?? agent.role}</p>
+              {stage && <p className="mt-2 truncate font-mono text-[11px] text-emerald-400" title={stage.artifact_id}>{stage.status} · {stage.events} EVENT{stage.events === 1 ? '' : 'S'}</p>}
             </motion.article>
 
             {index < agents.length - 1 && (
