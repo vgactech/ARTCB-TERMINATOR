@@ -7,7 +7,7 @@
  *  4. Timeline forensic en temps réel via SSE
  */
 import { useEffect, useRef, useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   FileText, Shield, AlertTriangle, CheckCircle2,
   Clock, Download, User, Hash, Lock, Zap,
@@ -183,9 +183,9 @@ export function KycPanel({ apiBase }: KycPanelProps) {
         )}
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-0 divide-x divide-white/8">
+      <div className="grid lg:grid-cols-2 gap-0 divide-x divide-white/8 items-start">
         {/* LEFT — formulaire + métriques */}
-        <div className="p-5 space-y-5">
+        <div className="p-5 space-y-5 overflow-hidden">
           {/* Identité */}
           <div className="grid grid-cols-2 gap-3">
             {[
@@ -251,32 +251,26 @@ export function KycPanel({ apiBase }: KycPanelProps) {
           </div>
 
           {/* Résultat KYC */}
-          <AnimatePresence>
-            {result && (
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`rounded-xl border p-4 ${result.verdict === 'APPROVED' ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-rose-400/30 bg-rose-400/5'}`}
-              >
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-2 font-semibold">Rapport KYC</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    ['Verdict', result.verdict],
-                    ['Score',   `${result.score}%`],
-                    ['Attaques bloquées', result.attacks_blocked],
-                    ['Chaîne intègre',   result.chain_intact ? 'OUI' : 'NON'],
-                    ['Session',  result.session_id.slice(0, 14) + '…'],
-                    ['Timestamp', new Date(result.timestamp).toLocaleTimeString()],
-                  ].map(([k, v]) => (
-                    <div key={k as string} className="flex justify-between gap-1">
-                      <span className="text-slate-500">{k}</span>
-                      <span className="font-mono text-white">{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {result && (
+            <div className={`rounded-xl border p-4 ${result.verdict === 'APPROVED' ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-rose-400/30 bg-rose-400/5'}`}>
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-2 font-semibold">Rapport KYC</p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {[
+                  ['Verdict', result.verdict],
+                  ['Score',   `${result.score}%`],
+                  ['Attaques bloquées', String(result.attacks_blocked)],
+                  ['Chaîne intègre',   result.chain_intact ? 'OUI' : 'NON'],
+                  ['Session',  result.session_id.slice(0, 14) + '…'],
+                  ['Timestamp', new Date(result.timestamp).toLocaleTimeString()],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-1">
+                    <span className="text-slate-500">{k}</span>
+                    <span className="font-mono text-white">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* RIGHT — timeline forensic */}
@@ -286,17 +280,16 @@ export function KycPanel({ apiBase }: KycPanelProps) {
             {running && <span className="flex items-center gap-1.5 text-[10px] text-cyan-300 animate-pulse"><span className="size-1.5 rounded-full bg-cyan-400 inline-block"/>LIVE</span>}
           </div>
 
-          <div ref={timelineRef} className="flex-1 min-h-[280px] max-h-[400px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-            <AnimatePresence initial={false}>
-              {timeline.length === 0 && (
-                <p className="text-xs text-slate-600 text-center py-10">Lance un scénario KYC pour voir les événements forensic en temps réel</p>
-              )}
-              {timeline.map(entry => (
+          <div ref={timelineRef} className="h-[360px] overflow-y-auto space-y-1.5 pr-1">
+            {timeline.length === 0 ? (
+              <p className="text-xs text-slate-600 text-center py-10">Lance un scénario KYC pour voir les événements forensic en temps réel</p>
+            ) : (
+              timeline.map(entry => (
                 <motion.div
                   key={entry.id}
-                  initial={{ opacity: 0, x: 12 }}
+                  initial={{ opacity: 0, x: 8 }}
                   animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.2 }}
+                  transition={{ duration: 0.18 }}
                   className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${TYPE_COLORS[entry.type]}`}
                 >
                   {STATUS_ICON[entry.status]}
@@ -306,8 +299,8 @@ export function KycPanel({ apiBase }: KycPanelProps) {
                   </div>
                   <span className="text-[9px] opacity-50 shrink-0 font-mono">{new Date(entry.ts).toLocaleTimeString()}</span>
                 </motion.div>
-              ))}
-            </AnimatePresence>
+              ))
+            )}
           </div>
         </div>
       </div>
