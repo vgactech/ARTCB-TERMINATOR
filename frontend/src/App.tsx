@@ -150,18 +150,18 @@ function App() {
         {/* ── Tabs ──────────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-1 mb-6 bg-slate-950/50 rounded-xl p-1 border border-white/8 w-fit">
           {([
-            { id: 'pitch',     label: '🏦 Pitch Jury' },
-            { id: 'kyc',       label: '🔍 KYC Forensic' },
-            { id: 'scenarios', label: '⚡ Scénarios Guardian' },
-          ] as const).map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t.id ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              {t.label}
-            </button>
-          ))}
+              { id: 'pitch',     label: '🏦 Pitch Jury',          hidden: false },
+              { id: 'kyc',       label: '🔍 KYC Forensic',        hidden: true  },
+              { id: 'scenarios', label: '⚡ Scénarios Guardian',  hidden: false },
+            ] as const).filter(t => !t.hidden).map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t.id ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                {t.label}
+              </button>
+            ))}
         </div>
 
         {/* ── Pitch Tab ─────────────────────────────────────────────────────── */}
