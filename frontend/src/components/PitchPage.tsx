@@ -10,6 +10,7 @@ import {
   Building2, Gavel, TrendingUp, Lock,
   CheckCircle2, ArrowRight, Zap, Globe,
 } from 'lucide-react'
+import { AnimatedArchitectureGraph } from './AnimatedArchitectureGraph'
 
 type CardProps = {
   icon: React.ReactNode
@@ -74,11 +75,15 @@ export function PitchPage() {
             <ShieldCheck size={20} className="text-emerald-300" />
             <span className="font-mono text-[11px] font-bold tracking-[0.2em] text-emerald-300">ARTCB TERMINATOR FORENSIC</span>
           </div>
-          <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight max-w-3xl">
-            La première plateforme de{' '}
-            <span className="text-emerald-300">sécurité forensique</span>{' '}
-            pour agents IA dans les processus bancaires et juridiques
-          </h1>
+          <div className="flex flex-wrap items-center gap-3 mb-2">
+            <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight">
+              Backend de{' '}
+              <span className="text-emerald-300">sécurité forensique</span>{' '}
+              pour agents IA dans les processus bancaires et juridiques
+            </h1>
+            <span className="shrink-0 px-3 py-1.5 rounded-lg border border-orange-400/40 bg-orange-400/10 text-orange-300 text-xs font-bold font-mono tracking-wider">RUST</span>
+            <span className="shrink-0 px-3 py-1.5 rounded-lg border border-sky-400/40 bg-sky-400/10 text-sky-300 text-xs font-bold font-mono tracking-wider">PYTHON</span>
+          </div>
           <p className="mt-4 text-slate-400 text-base max-w-2xl leading-relaxed">
             Chaque décision d'un agent IA est interceptée, tracée cryptographiquement
             et auditée en temps réel — avant toute exécution. Les attaques sont bloquées
@@ -91,6 +96,9 @@ export function PitchPage() {
           </div>
         </div>
       </motion.section>
+
+      {/* ── Graphe d'architecture animé ───────────────────────────────────── */}
+      <AnimatedArchitectureGraph />
 
       {/* ── Pourquoi ──────────────────────────────────────────────────────── */}
       <section>
@@ -334,7 +342,13 @@ export function PitchPage() {
                 'Rapport de conformité DORA/AMF automatique',
                 'Détection fraude temps réel sur agents IA',
               ],
-              regulation: 'DORA · AMF · BCB · DSP2 · LCB-FT',
+              regulations: [
+                { label: 'DORA',    style: 'border-amber-400/40 bg-amber-400/10 text-amber-200' },
+                { label: 'AMF',     style: 'border-sky-400/40 bg-sky-400/10 text-sky-200' },
+                { label: 'BCB',     style: 'border-sky-400/40 bg-sky-400/10 text-sky-200' },
+                { label: 'DSP2',    style: 'border-amber-400/40 bg-amber-400/10 text-amber-200' },
+                { label: 'LCB-FT',  style: 'border-violet-400/40 bg-violet-400/10 text-violet-200' },
+              ],
             },
             {
               icon: <Gavel size={24} className="text-violet-300" />,
@@ -347,7 +361,12 @@ export function PitchPage() {
                 'Audit d\'accès aux data rooms',
                 'Responsabilité civile des agents IA documentée',
               ],
-              regulation: 'RGPD · eIDAS · NIS2 · Code civil Art. 1366',
+              regulations: [
+                { label: 'RGPD',              style: 'border-violet-400/40 bg-violet-400/10 text-violet-200' },
+                { label: 'eIDAS',             style: 'border-sky-400/40 bg-sky-400/10 text-sky-200' },
+                { label: 'NIS2',              style: 'border-amber-400/40 bg-amber-400/10 text-amber-200' },
+                { label: 'Code civil 1366',   style: 'border-violet-400/40 bg-violet-400/10 text-violet-200' },
+              ],
             },
             {
               icon: <TrendingUp size={24} className="text-emerald-300" />,
@@ -360,7 +379,11 @@ export function PitchPage() {
                 'Différenciation réglementaire',
                 'Due diligence investissement : preuves techniques',
               ],
-              regulation: 'AI Act (2024) · ISO 27001 · SOC 2',
+              regulations: [
+                { label: 'AI Act 2024', style: 'border-amber-400/40 bg-amber-400/10 text-amber-200' },
+                { label: 'ISO 27001',   style: 'border-sky-400/40 bg-sky-400/10 text-sky-200' },
+                { label: 'SOC 2',       style: 'border-violet-400/40 bg-violet-400/10 text-violet-200' },
+              ],
             },
           ].map(group => (
             <motion.div
@@ -394,8 +417,14 @@ export function PitchPage() {
               </div>
 
               <div className="pt-2 border-t border-white/6">
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Réglementations couvertes</p>
-                <p className="font-mono text-[10px] text-slate-400">{group.regulation}</p>
+                <p className="text-[11px] font-bold text-white uppercase tracking-widest mb-2">Réglementations couvertes</p>
+                <div className="flex flex-wrap gap-2">
+                  {group.regulations.map(r => (
+                    <span key={r.label} className={`px-3 py-1 rounded-lg border text-xs font-bold font-mono tracking-wide ${r.style}`}>
+                      {r.label}
+                    </span>
+                  ))}
+                </div>
               </div>
             </motion.div>
           ))}
