@@ -85,9 +85,9 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   }
 
   function runKyc() {
-    // Validation : refuser la soumission si tous les champs sont vides
-    if (!firstName.trim() && !lastName.trim() && !docId.trim() && !dob.trim()) {
-      addEntry({ type: 'error', label: 'Formulaire vide', detail: 'Veuillez renseigner au moins le prénom, le nom et le numéro de document', status: 'fail' })
+    // Validation : refuser la soumission si un champ requis est vide
+    if (!firstName.trim() || !lastName.trim() || !docId.trim() || !dob.trim()) {
+      addEntry({ type: 'error', label: 'Champ requis manquant', detail: 'Prénom, nom, n° document et date de naissance sont obligatoires', status: 'fail' })
       return
     }
     reset()
