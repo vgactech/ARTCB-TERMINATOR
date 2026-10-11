@@ -60,7 +60,7 @@
 
 | Check | Result |
 |---|---|
-| Token `ASIA3GKIQ53KVTG7O3QJ` | ❌ `ExpiredTokenException` |
+| Token `[REDACTED]` | ❌ `ExpiredTokenException` |
 | Bedrock access | ❌ Blocked (token expired) |
 | EC2 instances visible | 0 (token expired — cannot confirm server state) |
 
