@@ -142,8 +142,20 @@ export function KycPanel({ apiBase }: KycPanelProps) {
       es.close()
       setRunning(false)
     })
-    es.addEventListener('error', () => {
-      addEntry({ type: 'error', label: 'Erreur connexion SSE', detail: 'Vérifier que l\'API est accessible', status: 'fail' })
+    es.addEventListener('error', (ev: Event) => {
+      // Discriminer : erreur de connexion initiale vs fin normale du stream
+      const target = ev.target as EventSource
+      const readyState = target?.readyState ?? -1
+      if (readyState === EventSource.CLOSED) {
+        // Stream fermé proprement après 'done' — pas une erreur
+        return
+      }
+      addEntry({
+        type: 'error',
+        label: 'Erreur connexion SSE',
+        detail: `API inaccessible (${apiBase || 'URL non configurée'}) — vérifier VITE_API_URL`,
+        status: 'fail',
+      })
       es.close()
       setRunning(false)
     })

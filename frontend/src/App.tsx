@@ -131,7 +131,7 @@ function App() {
             {/* HUD toggle */}
             <button
               onClick={() => setShowHudGraph(v => !v)}
-              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${showHudGraph ? 'border-cyan-400/30 bg-cyan-400/10 text-cyan-300' : 'border-white/10 text-slate-500 hover:text-slate-300'}`}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${showHudGraph ? 'border-cyan-400/30 bg-cyan-400/10 text-cyan-300' : 'border-white/10 text-slate-400 hover:text-slate-200'}`}
             >
               <Activity size={13} /> HUD Graph
             </button>
@@ -156,7 +156,7 @@ function App() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t.id ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t.id ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-400 hover:text-slate-200'}`}
             >
               {t.label}
             </button>
