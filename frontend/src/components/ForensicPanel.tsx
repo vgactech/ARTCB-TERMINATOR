@@ -97,7 +97,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-white">Forensic Indicators</p>
-          <p className="mt-0.5 text-xs text-slate-500">Real-time phase analysis</p>
+          <p className="mt-0.5 text-xs text-slate-400">Real-time phase analysis</p>
         </div>
         <span className={`font-mono text-[11px] font-bold tracking-widest ${phaseColor}`}>
           {config.shortLabel}
@@ -133,7 +133,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
             {config.alertText}
           </p>
           {config.strategicSummary && (
-            <p className="mt-1 text-[11px] text-slate-500">{config.strategicSummary}</p>
+            <p className="mt-1 text-[11px] text-slate-400">{config.strategicSummary}</p>
           )}
         </div>
       )}
@@ -141,7 +141,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
       {/* ARTCB MCP status */}
       {artcbChecked && (
         <div className="flex items-center justify-between rounded-lg border border-white/6 bg-black/20 px-3 py-2">
-          <span className="flex items-center gap-1.5 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
             <Zap size={11} aria-hidden="true" />
             ARTCB MCP Bridge
           </span>
@@ -150,7 +150,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
               ONLINE · {artcbStatus.tool_count ?? 0} tools
             </span>
           ) : (
-            <span className="font-mono text-[10px] font-bold text-slate-600">
+            <span className="font-mono text-[10px] font-bold text-slate-400">
               OFFLINE
             </span>
           )}
@@ -160,7 +160,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
       {/* Decision badge (when result is available) */}
       {result && (
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">Guardian decision:</span>
+          <span className="text-xs text-slate-400">Guardian decision:</span>
           <span
             className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${
               result.decision === 'ALLOW'

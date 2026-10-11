@@ -117,17 +117,17 @@ function App() {
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <header className="relative border-b border-white/8 bg-[#0a1627]/85 backdrop-blur-xl sticky top-0 z-30">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300">
-              <ShieldCheck size={22} />
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-3 lg:px-8 gap-2">
+          <div className="flex items-center gap-2 min-w-0 shrink">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300">
+              <ShieldCheck size={20} />
             </div>
-            <div>
-              <p className="text-sm font-bold tracking-[0.12em] text-white">ARTCB TERMINATOR FORENSIC</p>
-              <p className="text-[11px] text-slate-500">Guardian Security Console · KYC · Blockchain</p>
+            <div className="min-w-0">
+              <p className="text-sm font-bold tracking-[0.12em] text-white truncate">ARTCB TERMINATOR FORENSIC</p>
+              <p className="text-[11px] text-slate-400 truncate">Guardian Security Console · KYC · Blockchain</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             {/* HUD toggle */}
             <button
               onClick={() => setShowHudGraph(v => !v)}
@@ -136,9 +136,10 @@ function App() {
               <Activity size={13} /> HUD Graph
             </button>
             {/* Engine badge */}
-            <span className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold ${engineState === 'online' ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/30 bg-rose-400/10 text-rose-300'}`}>
-              <span className={`size-1.5 rounded-full ${engineState === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-              {engineState === 'online' ? 'Guardian Online' : engineState === 'offline' ? 'Offline' : 'Connexion…'}
+            <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap ${engineState === 'online' ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/30 bg-rose-400/10 text-rose-300'}`}>
+              <span className={`size-1.5 rounded-full shrink-0 ${engineState === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              <span className="hidden sm:inline">{engineState === 'online' ? 'Guardian Online' : engineState === 'offline' ? 'Offline' : 'Connexion…'}</span>
+              <span className="sm:hidden">{engineState === 'online' ? 'ON' : engineState === 'offline' ? 'OFF' : '…'}</span>
             </span>
           </div>
         </div>
@@ -189,7 +190,7 @@ function App() {
             <section aria-labelledby="scenario-heading">
               <div className="flex items-end justify-between gap-4 mb-4">
                 <h2 id="scenario-heading" className="text-lg font-semibold text-white">Choisir un scénario</h2>
-                <span className="font-mono text-[10px] text-slate-600">{scenarios.length} DISPONIBLES</span>
+                <span className="font-mono text-[10px] text-slate-400">{scenarios.length} DISPONIBLES</span>
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {scenarios.map((scenario) => (
@@ -202,7 +203,7 @@ function App() {
                   >
                     <span className="font-mono text-[10px] font-bold text-emerald-300">{scenario.risk} RISK</span>
                     <span className="mt-2 block text-sm font-semibold text-white">{scenario.name}</span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">{scenarioDescriptions[scenario.id] ?? scenario.description}</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-400">{scenarioDescriptions[scenario.id] ?? scenario.description}</span>
                   </button>
                 ))}
               </div>
@@ -227,7 +228,7 @@ function App() {
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div>
                     <p className="text-sm font-semibold text-white">Trace d'exécution 4 agents</p>
-                    <p className="mt-1 text-xs text-slate-500">Chemin d'orchestration rapporté par le backend</p>
+                    <p className="mt-1 text-xs text-slate-400">Chemin d'orchestration rapporté par le backend</p>
                   </div>
                   {result && (
                     <button
@@ -254,7 +255,7 @@ function App() {
                   className="rounded-2xl border border-white/8 bg-slate-950/55 p-5"
                 >
                   <div className="flex items-start justify-between">
-                    <p className="text-sm text-slate-500">{metric.label}</p>
+                    <p className="text-sm text-slate-400">{metric.label}</p>
                     <CircleCheck size={17} className={metric.iconClass} />
                   </div>
                   <p className="mt-4 text-2xl font-semibold text-white">{metric.value}</p>
@@ -269,13 +270,13 @@ function App() {
           </div>
         )}
 
-        <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-600">
+        <footer className="mt-10 border-t border-white/6 py-6 text-center text-xs text-slate-400">
           ARTCB TERMINATOR · Guardian Security Console · Hackathon ESSEC 2026
         </footer>
       </div>
 
       {/* ── HUD Graph (superposé fixe) ────────────────────────────────────── */}
-      {showHudGraph && (kycRunning || kycEvents.length > 0) && (
+      {showHudGraph && (
         <LiveGuardianGraph
           events={kycEvents}
           running={kycRunning}

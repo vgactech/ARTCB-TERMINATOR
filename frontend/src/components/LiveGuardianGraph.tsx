@@ -145,7 +145,7 @@ export function LiveGuardianGraph({ events, running, decision }: Props) {
         </div>
         <button
           onClick={() => setMinimized(m => !m)}
-          className="text-slate-500 hover:text-slate-300 transition"
+          className="text-slate-400 hover:text-slate-200 transition"
         >
           {minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
         </button>

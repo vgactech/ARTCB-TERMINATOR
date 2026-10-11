@@ -85,9 +85,14 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   }
 
   function runKyc() {
+    // Validation : refuser la soumission si tous les champs sont vides
+    if (!firstName.trim() && !lastName.trim() && !docId.trim() && !dob.trim()) {
+      addEntry({ type: 'error', label: 'Formulaire vide', detail: 'Veuillez renseigner au moins le prénom, le nom et le numéro de document', status: 'fail' })
+      return
+    }
     reset()
     setRunning(true)
-    addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `${firstName} ${lastName} · ${docId}`, status: 'info' })
+    addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `${firstName || '?'} ${lastName || '?'} · ${docId || '?'}`, status: 'info' })
 
     const url = `${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}`
     const es = new EventSource(url)
@@ -201,7 +206,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
               { label: 'Date naissance',  value: dob,       set: setDob       },
             ].map(f => (
               <label key={f.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <span style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</span>
                 <input
                   type="text"
                   value={f.value}
@@ -226,7 +231,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
             ].map(m => (
               <div key={m.label} style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
                 <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: m.color }}>{m.value}</p>
-                <p style={{ margin: '2px 0 0', fontSize: 10, color: '#64748b' }}>{m.label}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 10, color: '#94a3b8' }}>{m.label}</p>
               </div>
             ))}
           </div>

@@ -7,7 +7,7 @@ export function EventTimeline({ events }: { events: GuardianEvent[] }) {
       <div className="flex items-end justify-between gap-4">
         <div>
           <h2 id="timeline-heading" className="text-sm font-semibold text-white">Recorded Guardian events</h2>
-          <p className="mt-1 text-xs text-slate-500">The real intent and terminal records returned by this run</p>
+          <p className="mt-1 text-xs text-slate-400">The real intent and terminal records returned by this run</p>
         </div>
         <span className="font-mono text-[10px] text-emerald-300">{events.length} EVENTS</span>
       </div>
@@ -19,13 +19,13 @@ export function EventTimeline({ events }: { events: GuardianEvent[] }) {
             <details className="group min-w-0 flex-1 rounded-xl border border-white/6 bg-white/[0.018] px-4 py-3 open:border-emerald-400/15">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
                 <span><span className="mr-2 font-mono text-[10px] font-bold text-emerald-400">#{event.sequence_no}</span><span className="text-sm font-medium text-slate-200">{event.event_phase} · {event.decision}</span></span>
-                <ChevronDown size={14} className="shrink-0 text-slate-600 transition group-open:rotate-180" aria-hidden="true" />
+                <ChevronDown size={14} className="shrink-0 text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
               </summary>
               <dl className="mt-3 grid gap-2 border-t border-white/6 pt-3 text-xs">
-                <div><dt className="inline text-slate-600">Event: </dt><dd className="inline break-all font-mono text-slate-400">{event.event_id}</dd></div>
-                <div><dt className="inline text-slate-600">Tool: </dt><dd className="inline font-mono text-slate-400">{event.tool_name}</dd></div>
-                <div><dt className="inline text-slate-600">Status: </dt><dd className="inline font-mono text-slate-400">{event.execution_status}</dd></div>
-                <div><dt className="inline text-slate-600">Hash: </dt><dd className="inline break-all font-mono text-slate-400">{event.event_hash}</dd></div>
+                <div><dt className="inline text-slate-400">Event: </dt><dd className="inline break-all font-mono text-slate-400">{event.event_id}</dd></div>
+                <div><dt className="inline text-slate-400">Tool: </dt><dd className="inline font-mono text-slate-400">{event.tool_name}</dd></div>
+                <div><dt className="inline text-slate-400">Status: </dt><dd className="inline font-mono text-slate-400">{event.execution_status}</dd></div>
+                <div><dt className="inline text-slate-400">Hash: </dt><dd className="inline break-all font-mono text-slate-400">{event.event_hash}</dd></div>
               </dl>
             </details>
           </li>

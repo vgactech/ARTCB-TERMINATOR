@@ -39,7 +39,7 @@ export function AgentFlow({ activeAgent, running, stages = [] }: AgentFlowProps)
                 <Icon size={21} aria-hidden="true" />
               </div>
               <div className="mt-5 flex items-center gap-2">
-                <span className="font-mono text-xs font-semibold text-slate-500">AGENT {agent.id}</span>
+                <span className="font-mono text-xs font-semibold text-slate-400">AGENT {agent.id}</span>
                 <span className={`size-1.5 rounded-full ${activeAgent >= index ? 'bg-emerald-400' : 'bg-slate-700'}`} />
               </div>
               <h3 className="mt-1 text-base font-semibold text-white">{agent.name}</h3>

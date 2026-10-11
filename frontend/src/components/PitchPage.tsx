@@ -41,7 +41,7 @@ function Stat({ value, label, sub }: { value: string; label: string; sub?: strin
     <div className="rounded-xl border border-white/8 bg-slate-950/50 p-5 text-center">
       <p className="text-3xl font-bold text-emerald-300">{value}</p>
       <p className="text-sm font-semibold text-white mt-1">{label}</p>
-      {sub && <p className="text-[11px] text-slate-500 mt-0.5">{sub}</p>}
+      {sub && <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>}
     </div>
   )
 }
@@ -52,7 +52,7 @@ function Step({ n, label, detail }: { n: number; label: string; detail: string }
       <div className="shrink-0 flex size-7 items-center justify-center rounded-full border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 text-xs font-bold">{n}</div>
       <div>
         <p className="text-sm font-semibold text-white">{label}</p>
-        <p className="text-xs text-slate-500 mt-0.5">{detail}</p>
+        <p className="text-xs text-slate-400 mt-0.5">{detail}</p>
       </div>
     </div>
   )
@@ -179,23 +179,23 @@ export function PitchPage() {
 
         {/* Architecture visuelle */}
         <div className="rounded-2xl border border-white/8 bg-slate-950/60 p-6 mb-6">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-5">Architecture — flux de traitement</p>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-5">Architecture — flux de traitement</p>
           <div className="flex flex-wrap items-center gap-2 justify-center">
             {[
               { label: 'Agent LLM', sub: 'Attaquant/Légitime', color: 'border-amber-400/30 text-amber-300 bg-amber-400/5' },
-              { label: '→', sub: '', color: 'border-none text-slate-600' },
+              { label: '→', sub: '', color: 'border-none text-slate-400' },
               { label: 'Orchestrator', sub: 'Session Guardian', color: 'border-cyan-400/30 text-cyan-300 bg-cyan-400/5' },
-              { label: '→', sub: '', color: 'border-none text-slate-600' },
+              { label: '→', sub: '', color: 'border-none text-slate-400' },
               { label: 'Propagator', sub: 'Relais causal', color: 'border-sky-400/30 text-sky-300 bg-sky-400/5' },
-              { label: '→', sub: '', color: 'border-none text-slate-600' },
+              { label: '→', sub: '', color: 'border-none text-slate-400' },
               { label: 'Guardian', sub: 'BLOCK/ALLOW', color: 'border-emerald-400/30 text-emerald-300 bg-emerald-400/5' },
-              { label: '→', sub: '', color: 'border-none text-slate-600' },
+              { label: '→', sub: '', color: 'border-none text-slate-400' },
               { label: 'Preuve R0', sub: 'Hash SHA-256', color: 'border-violet-400/30 text-violet-300 bg-violet-400/5' },
-              { label: '→', sub: '', color: 'border-none text-slate-600' },
+              { label: '→', sub: '', color: 'border-none text-slate-400' },
               { label: 'Rapport PDF', sub: 'Recevable', color: 'border-rose-400/30 text-rose-300 bg-rose-400/5' },
             ].map((node) => (
               node.label === '→' ? (
-                <span key={Math.random()} className="text-slate-600 text-lg font-light">{node.label}</span>
+                <span key={Math.random()} className="text-slate-400 text-lg font-light">{node.label}</span>
               ) : (
                 <div key={node.label} className={`rounded-xl border px-4 py-2.5 text-center ${node.color}`}>
                   <p className="text-xs font-bold">{node.label}</p>
@@ -261,7 +261,7 @@ export function PitchPage() {
           </p>
           <div className="grid sm:grid-cols-2 gap-6">
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Sans Guardian</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Sans Guardian</p>
               <ul className="space-y-2">
                 {[
                   'Agent IA accepte une fausse identité',
@@ -277,7 +277,7 @@ export function PitchPage() {
               </ul>
             </div>
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Avec Guardian</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Avec Guardian</p>
               <ul className="space-y-2">
                 {[
                   'Identité vérifiée, attaque fraud détectée',
@@ -296,7 +296,7 @@ export function PitchPage() {
         </div>
 
         <div className="rounded-2xl border border-white/8 bg-slate-950/60 p-6">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Déroulé du scénario KYC — visible par le jury en direct</p>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Déroulé du scénario KYC — visible par le jury en direct</p>
           <div className="grid sm:grid-cols-2 gap-3">
             {[
               { n: 1, label: 'Soumission identité', detail: 'Prénom, nom, n° document, date de naissance' },
@@ -382,7 +382,7 @@ export function PitchPage() {
               </div>
 
               <div>
-                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cas d'usage</p>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Cas d'usage</p>
                 <ul className="space-y-1.5">
                   {group.usecases.map(u => (
                     <li key={u} className="flex items-start gap-2 text-xs text-slate-400">
@@ -394,7 +394,7 @@ export function PitchPage() {
               </div>
 
               <div className="pt-2 border-t border-white/6">
-                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Réglementations couvertes</p>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Réglementations couvertes</p>
                 <p className="font-mono text-[10px] text-slate-400">{group.regulation}</p>
               </div>
             </motion.div>
@@ -429,7 +429,7 @@ export function PitchPage() {
           En moins de 5 secondes, vous verrez une vraie attaque IA générée, bloquée,
           tracée cryptographiquement et documentée en PDF — en temps réel.
         </p>
-        <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-500">
+        <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-400">
           <span>🏦 Banques &amp; Fintech</span>
           <span>⚖️ Juristes &amp; Compliance</span>
           <span>🔐 Sécurité IA</span>

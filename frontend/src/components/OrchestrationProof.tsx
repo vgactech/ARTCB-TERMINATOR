@@ -17,7 +17,7 @@ export function OrchestrationProof({ result }: { result: PolicyScenarioResult })
       <div className="flex flex-col justify-between gap-3 border-b border-cyan-400/10 bg-cyan-400/[0.035] px-6 py-5 sm:flex-row sm:items-center">
         <div>
           <div className="flex items-center gap-2 text-cyan-300"><Network size={18} aria-hidden="true" /><h2 id="orchestration-proof-heading" className="text-sm font-semibold">Verified four-agent backend execution</h2></div>
-          <p className="mt-1 text-xs text-slate-500">These identities and artifacts were returned by the API for this run.</p>
+          <p className="mt-1 text-xs text-slate-400">These identities and artifacts were returned by the API for this run.</p>
         </div>
         <span className="w-fit rounded-full border border-cyan-400/20 bg-cyan-400/8 px-3 py-1 font-mono text-[10px] font-bold text-cyan-300">{result.distinct_agent_count} DISTINCT INSTANCES</span>
       </div>
@@ -30,17 +30,17 @@ export function OrchestrationProof({ result }: { result: PolicyScenarioResult })
               <span className="flex items-center gap-1 font-mono text-[9px] font-bold text-emerald-300"><CheckCircle2 size={12} /> {agent.status}</span>
             </div>
             <p className="mt-4 text-sm font-semibold capitalize text-white">{agent.role}</p>
-            <p className="mt-1 text-xs text-slate-500">{labels[agent.role]}</p>
+            <p className="mt-1 text-xs text-slate-400">{labels[agent.role]}</p>
             <p className="mt-4 break-all font-mono text-[10px] leading-4 text-slate-400">{agent.id}</p>
-            <p className="mt-2 truncate font-mono text-[9px] text-slate-600" title={agent.artifact_id}>Artifact: {agent.artifact_id}</p>
+            <p className="mt-2 truncate font-mono text-[9px] text-slate-400" title={agent.artifact_id}>Artifact: {agent.artifact_id}</p>
             {index < result.agents.length - 1 && <ArrowRight className="absolute -right-2.5 top-1/2 z-10 hidden text-cyan-500 lg:block" size={18} aria-hidden="true" />}
           </div>
         ))}
       </div>
 
       <div className="grid gap-3 border-t border-cyan-400/10 p-5 md:grid-cols-3">
-        <div className="rounded-xl border border-white/6 bg-black/15 p-4"><p className="text-[10px] uppercase tracking-wider text-slate-600">Request ID</p><p className="mt-2 truncate font-mono text-xs text-slate-300" title={result.request.request_id}>{result.request.request_id}</p></div>
-        <div className="rounded-xl border border-white/6 bg-black/15 p-4"><p className="text-[10px] uppercase tracking-wider text-slate-600">Propagation ID</p><p className="mt-2 truncate font-mono text-xs text-slate-300" title={result.propagation.propagation_id}>{result.propagation.propagation_id}</p></div>
+        <div className="rounded-xl border border-white/6 bg-black/15 p-4"><p className="text-[10px] uppercase tracking-wider text-slate-400">Request ID</p><p className="mt-2 truncate font-mono text-xs text-slate-300" title={result.request.request_id}>{result.request.request_id}</p></div>
+        <div className="rounded-xl border border-white/6 bg-black/15 p-4"><p className="text-[10px] uppercase tracking-wider text-slate-400">Propagation ID</p><p className="mt-2 truncate font-mono text-xs text-slate-300" title={result.propagation.propagation_id}>{result.propagation.propagation_id}</p></div>
         <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.035] p-4"><p className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-300"><Fingerprint size={12} /> Causal integrity</p><p className="mt-2 font-mono text-xs font-bold text-emerald-300">{requestRelayed && hashPreserved ? 'REQUEST + HASH MATCH' : 'MISMATCH DETECTED'}</p></div>
       </div>
     </section>
