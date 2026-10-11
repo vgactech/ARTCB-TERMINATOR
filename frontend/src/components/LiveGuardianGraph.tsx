@@ -75,16 +75,52 @@ function buildNodes(events: KycStreamEvent[]): GraphNode[] {
 
   for (const ev of events) {
     const type = ev._type
-    if (type === 'session_opened')    { states.orchestrator = 'active'; counts.orchestrator++ }
-    if (type === 'attack_generated')  { states.orchestrator = 'done'; states.attacker = 'blocked'; counts.attacker++ }
-    if (type === 'propagation')       { states.attacker = 'done'; states.propagator = 'active'; counts.propagator++ }
+
+    if (type === 'session_opened') {
+      // Orchestrateur ouvre la session — actif, pas encore de décision
+      states.orchestrator = 'active'
+      counts.orchestrator++
+    }
+
+    if (type === 'attack_generated') {
+      // L'attaquant a généré une tentative — état "active" (en cours), PAS "blocked"
+      // Le blocage ne peut être établi qu'après guardian_decision
+      states.orchestrator = 'done'
+      states.attacker = 'active'   // ← corrigé : attaque générée ≠ attaque bloquée
+      counts.attacker++
+    }
+
+    if (type === 'propagation') {
+      // La tentative est relayée vers Guardian — attaquant done, propagateur actif
+      states.attacker = 'done'
+      states.propagator = 'active'
+      counts.propagator++
+    }
+
     if (type === 'guardian_decision') {
+      // C'est ICI que le blocage est établi, sur la base d'un événement authentifié
       const d = ev as Record<string, string>
       states.propagator = 'done'
-      states.defender = d.decision === 'BLOCK' ? 'blocked' : 'active'
+      if (d.decision === 'BLOCK') {
+        // Guardian a bloqué : le défenseur est en état "blocked" (décision prise)
+        // L'attaquant passe aussi en "blocked" rétroactivement : son action a été rejetée
+        states.defender = 'blocked'
+        states.attacker = 'blocked'
+      } else if (d.decision === 'ALLOW') {
+        states.defender = 'done'
+        states.attacker = 'done'
+      } else {
+        // ESCALATE ou autre
+        states.defender = 'active'
+      }
       counts.defender++
     }
-    if (type === 'chain_verified' || type === 'done') { states.defender = 'done' }
+
+    if (type === 'chain_verified' || type === 'done') {
+      // Vérification de chaîne complète — tous les agents terminés
+      states.defender = 'done'
+      // L'attaquant reste dans son état final (blocked si BLOCK, done si ALLOW)
+    }
   }
 
   return INITIAL_NODES.map(n => ({ ...n, state: states[n.id], events: counts[n.id] }))
