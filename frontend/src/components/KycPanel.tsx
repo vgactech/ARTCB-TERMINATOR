@@ -1,22 +1,16 @@
 /**
  * KycPanel — ARTCB TERMINATOR FORENSIC
- * Scénario KYC complet jury-grade :
- *  1. Formulaire identité
- *  2. Traitement Guardian (attaque LLM détectée + contrée)
- *  3. PDF résultat avec taux de succès
- *  4. Timeline forensic en temps réel via SSE
+ * Robuste mobile + desktop, sans AnimatePresence, sans overflow-hidden
  */
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
-  FileText, Shield, AlertTriangle, CheckCircle2,
-  Clock, Download, User, Hash, Lock, Zap,
+  Shield, AlertTriangle, CheckCircle2,
+  Clock, Download, User,
 } from 'lucide-react'
 import type { KycResult, KycStreamEvent } from '../api/guardian'
 
-type KycPanelProps = {
-  apiBase: string
-}
+type KycPanelProps = { apiBase: string }
 
 type TimelineEntry = {
   id: string
@@ -27,21 +21,31 @@ type TimelineEntry = {
   status: 'ok' | 'warn' | 'fail' | 'info'
 }
 
-const TYPE_COLORS: Record<TimelineEntry['type'], string> = {
-  session:  'text-cyan-300   border-cyan-400/40   bg-cyan-400/10',
-  attack:   'text-amber-300  border-amber-400/40  bg-amber-400/10',
-  block:    'text-emerald-300 border-emerald-400/40 bg-emerald-400/10',
-  chain:    'text-violet-300 border-violet-400/40  bg-violet-400/10',
-  kyc_step: 'text-sky-300    border-sky-400/40    bg-sky-400/10',
-  done:     'text-emerald-300 border-emerald-400/50 bg-emerald-400/15',
-  error:    'text-rose-300   border-rose-400/40   bg-rose-400/10',
+const TYPE_BG: Record<TimelineEntry['type'], string> = {
+  session:  'border-l-cyan-400   bg-cyan-950/40',
+  attack:   'border-l-amber-400  bg-amber-950/40',
+  block:    'border-l-emerald-400 bg-emerald-950/40',
+  chain:    'border-l-violet-400  bg-violet-950/40',
+  kyc_step: 'border-l-sky-400    bg-sky-950/40',
+  done:     'border-l-emerald-400 bg-emerald-950/60',
+  error:    'border-l-rose-400    bg-rose-950/40',
 }
 
-const STATUS_ICON: Record<TimelineEntry['status'], React.ReactNode> = {
-  ok:   <CheckCircle2 size={13} className="text-emerald-300 shrink-0" />,
-  warn: <AlertTriangle size={13} className="text-amber-300 shrink-0" />,
-  fail: <AlertTriangle size={13} className="text-rose-300 shrink-0" />,
-  info: <Clock size={13} className="text-sky-300 shrink-0" />,
+const TYPE_TEXT: Record<TimelineEntry['type'], string> = {
+  session:  'text-cyan-300',
+  attack:   'text-amber-300',
+  block:    'text-emerald-300',
+  chain:    'text-violet-300',
+  kyc_step: 'text-sky-300',
+  done:     'text-emerald-300',
+  error:    'text-rose-300',
+}
+
+function StatusDot({ status }: { status: TimelineEntry['status'] }) {
+  if (status === 'ok')   return <CheckCircle2 size={12} className="text-emerald-400 shrink-0 mt-0.5" />
+  if (status === 'warn') return <AlertTriangle size={12} className="text-amber-400 shrink-0 mt-0.5" />
+  if (status === 'fail') return <AlertTriangle size={12} className="text-rose-400 shrink-0 mt-0.5" />
+  return <Clock size={12} className="text-sky-400 shrink-0 mt-0.5" />
 }
 
 export function KycPanel({ apiBase }: KycPanelProps) {
@@ -49,26 +53,26 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [lastName,  setLastName]  = useState('Dupont')
   const [docId,     setDocId]     = useState('FR-2024-887634')
   const [dob,       setDob]       = useState('1990-05-14')
-
   const [running,   setRunning]   = useState(false)
   const [timeline,  setTimeline]  = useState<TimelineEntry[]>([])
   const [result,    setResult]    = useState<KycResult | null>(null)
   const [pdfUrl,    setPdfUrl]    = useState<string | null>(null)
   const [attackCount, setAttackCount] = useState(0)
   const [blockCount,  setBlockCount]  = useState(0)
-
   const timelineRef = useRef<HTMLDivElement>(null)
   const esRef       = useRef<EventSource | null>(null)
 
-  // Auto-scroll timeline
   useEffect(() => {
-    if (timelineRef.current) {
+    if (timelineRef.current)
       timelineRef.current.scrollTop = timelineRef.current.scrollHeight
-    }
   }, [timeline])
 
-  function addEntry(entry: Omit<TimelineEntry, 'id' | 'ts'>) {
-    setTimeline(prev => [...prev, { ...entry, id: crypto.randomUUID(), ts: Date.now() }])
+  function addEntry(e: Omit<TimelineEntry, 'id' | 'ts'>) {
+    setTimeline(prev => [...prev, { ...e, id: crypto.randomUUID(), ts: Date.now() }])
+  }
+
+  function dispatch(type: string, data: KycStreamEvent) {
+    window.dispatchEvent(new CustomEvent('kyc_sse_event', { detail: { ...data, _type: type } }))
   }
 
   function reset() {
@@ -80,71 +84,54 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     setBlockCount(0)
   }
 
-  async function runKyc() {
+  function runKyc() {
     reset()
     setRunning(true)
+    addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `${firstName} ${lastName} · ${docId}`, status: 'info' })
 
-    addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `Identité : ${firstName} ${lastName} | Doc : ${docId}`, status: 'info' })
-
-    const es = new EventSource(`${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}`)
+    const url = `${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}`
+    const es = new EventSource(url)
     esRef.current = es
 
-    // Helper — dispatch vers App pour le HUD graph
-    function dispatch(type: string, data: KycStreamEvent) {
-      window.dispatchEvent(new CustomEvent('kyc_sse_event', { detail: { ...data, _type: type } }))
-    }
-
     es.addEventListener('session_opened', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as KycStreamEvent
-      dispatch('session_opened', d)
-      addEntry({ type: 'session',  label: 'Session Guardian ouverte', detail: `session: ${(d as Record<string, string>).session_id?.slice(0, 16)}…`, status: 'info' })
+      const d = JSON.parse(e.data) as Record<string, string>
+      dispatch('session_opened', d as KycStreamEvent)
+      addEntry({ type: 'session', label: 'Session Guardian ouverte', detail: `sess: ${d.session_id?.slice(0, 20)}…`, status: 'info' })
     })
-
     es.addEventListener('kyc_identity_check', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('kyc_identity_check', d as KycStreamEvent)
-      addEntry({ type: 'kyc_step', label: 'Vérification identité', detail: d.detail ?? 'Documents validés', status: 'ok' })
+      addEntry({ type: 'kyc_step', label: `Identité ${d.status === 'PASS' ? 'validée ✓' : 'refusée ✗'}`, detail: d.detail ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
     })
-
     es.addEventListener('attack_generated', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('attack_generated', d as KycStreamEvent)
       setAttackCount(c => c + 1)
-      addEntry({ type: 'attack', label: `Attaque LLM détectée — ${d.tool_chosen}`, detail: `Modèle: ${d.model} | Args: ${JSON.stringify(d.arguments ?? {}).slice(0, 60)}`, status: 'warn' })
+      addEntry({ type: 'attack', label: `⚠ Attaque LLM → ${d.tool_chosen}`, detail: `args: ${JSON.stringify(d.arguments ?? {}).slice(0, 55)}`, status: 'warn' })
     })
-
     es.addEventListener('propagation', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('propagation', d as KycStreamEvent)
-      addEntry({ type: 'kyc_step', label: 'Propagation → Defender', detail: `${d.propagation_id?.slice(0, 16) ?? ''}…`, status: 'info' })
+      addEntry({ type: 'kyc_step', label: 'Propagation → Guardian', detail: `prop: ${d.propagation_id?.slice(0, 20) ?? ''}…`, status: 'info' })
     })
-
     es.addEventListener('guardian_decision', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('guardian_decision', d as KycStreamEvent)
       const blocked = d.decision === 'BLOCK'
       if (blocked) setBlockCount(c => c + 1)
-      addEntry({
-        type:   blocked ? 'block' : 'kyc_step',
-        label:  `Guardian → ${d.decision}`,
-        detail: d.reason ?? '',
-        status: blocked ? 'ok' : 'warn',
-      })
+      addEntry({ type: blocked ? 'block' : 'kyc_step', label: `Guardian → ${d.decision}`, detail: d.reason ?? '', status: blocked ? 'ok' : 'warn' })
     })
-
     es.addEventListener('chain_verified', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('chain_verified', d as KycStreamEvent)
-      addEntry({ type: 'chain', label: `Chaîne cryptographique R0 — ${d.verdict}`, detail: `${d.events_replayed} événements vérifiés`, status: d.verdict === 'PASS' ? 'ok' : 'fail' })
+      addEntry({ type: 'chain', label: `Chaîne R0 → ${d.verdict}`, detail: `${d.events_replayed} événements vérifiés`, status: d.verdict === 'PASS' ? 'ok' : 'fail' })
     })
-
     es.addEventListener('kyc_result', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as KycResult
       dispatch('kyc_result', d as unknown as KycStreamEvent)
       setResult(d)
-      addEntry({ type: 'done', label: `KYC ${d.verdict}`, detail: `Score: ${d.score}% | Attaques bloquées: ${d.attacks_blocked}`, status: d.verdict === 'APPROVED' ? 'ok' : 'fail' })
+      addEntry({ type: 'done', label: `KYC ${d.verdict} · Score ${d.score}%`, detail: `${d.attacks_blocked} attaque(s) bloquée(s) · chaîne ${d.chain_intact ? 'intacte' : 'compromise'}`, status: d.verdict === 'APPROVED' ? 'ok' : 'fail' })
     })
-
     es.addEventListener('done', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, unknown>
       dispatch('done', d as KycStreamEvent)
@@ -155,9 +142,8 @@ export function KycPanel({ apiBase }: KycPanelProps) {
       es.close()
       setRunning(false)
     })
-
     es.addEventListener('error', () => {
-      addEntry({ type: 'error', label: 'Erreur stream', detail: 'Connexion SSE interrompue', status: 'fail' })
+      addEntry({ type: 'error', label: 'Erreur connexion SSE', detail: 'Vérifier que l\'API est accessible', status: 'fail' })
       es.close()
       setRunning(false)
     })
@@ -165,107 +151,129 @@ export function KycPanel({ apiBase }: KycPanelProps) {
 
   const successRate = attackCount > 0 ? Math.round((blockCount / attackCount) * 100) : 100
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="rounded-2xl border border-white/8 bg-slate-950/70 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-3 border-b border-white/8 px-5 py-4">
-        <div className="flex size-9 items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-400/10">
-          <User size={18} className="text-emerald-300" />
+    <div style={{ background: '#0b1321', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }}>
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <User size={17} color="#6ee7b7" />
         </div>
-        <div>
-          <p className="font-semibold text-white text-sm">Scénario KYC — Know Your Customer</p>
-          <p className="text-[11px] text-slate-500">Traitement identité en temps réel · attaques détectées · rapport PDF</p>
+        <div style={{ flex: 1 }}>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#fff' }}>Scénario KYC — Know Your Customer</p>
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>Traitement identité · attaque LLM · Guardian · rapport PDF</p>
         </div>
         {result && (
-          <span className={`ml-auto px-3 py-1 rounded-full text-xs font-bold border ${result.verdict === 'APPROVED' ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/40 bg-rose-400/10 text-rose-300'}`}>
-            {result.verdict}
-          </span>
+          <span style={{
+            padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+            background: result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.12)' : 'rgba(244,63,94,0.12)',
+            border: `1px solid ${result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.4)' : 'rgba(244,63,94,0.4)'}`,
+            color: result.verdict === 'APPROVED' ? '#6ee7b7' : '#fda4af',
+          }}>{result.verdict}</span>
         )}
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-0 divide-x divide-white/8 items-start">
-        {/* LEFT — formulaire + métriques */}
-        <div className="p-5 space-y-5 overflow-hidden">
-          {/* Identité */}
-          <div className="grid grid-cols-2 gap-3">
+      {/* ── Body : 2 colonnes sur large, 1 sur mobile ───────────────────── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+
+        {/* ─ Colonne gauche : formulaire ─────────────────────────────────── */}
+        <div style={{ flex: '1 1 320px', padding: 20, display: 'flex', flexDirection: 'column', gap: 16, borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+
+          {/* Champs identité */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              { label: 'Prénom', value: firstName, set: setFirstName, icon: <User size={13}/> },
-              { label: 'Nom',    value: lastName,  set: setLastName,  icon: <User size={13}/> },
-              { label: 'N° Document', value: docId, set: setDocId, icon: <Hash size={13}/> },
-              { label: 'Date naissance', value: dob, set: setDob,   icon: <FileText size={13}/> },
-            ].map(field => (
-              <label key={field.label} className="block space-y-1">
-                <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                  {field.icon} {field.label}
-                </span>
+              { label: 'Prénom',          value: firstName, set: setFirstName },
+              { label: 'Nom',             value: lastName,  set: setLastName  },
+              { label: 'N° Document',     value: docId,     set: setDocId     },
+              { label: 'Date naissance',  value: dob,       set: setDob       },
+            ].map(f => (
+              <label key={f.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</span>
                 <input
                   type="text"
-                  value={field.value}
-                  onChange={e => field.set(e.target.value)}
+                  value={f.value}
+                  onChange={e => f.set(e.target.value)}
                   disabled={running}
-                  className="w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none disabled:opacity-50"
+                  style={{
+                    background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: 8, padding: '7px 10px', fontSize: 13, color: '#fff',
+                    outline: 'none', opacity: running ? 0.5 : 1,
+                  }}
                 />
               </label>
             ))}
           </div>
 
           {/* Métriques */}
-          <div className="grid grid-cols-3 gap-2">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
             {[
-              { label: 'Attaques', value: attackCount, icon: <Zap size={14} className="text-amber-300"/>, color: 'text-amber-300' },
-              { label: 'Bloquées', value: blockCount,  icon: <Shield size={14} className="text-emerald-300"/>, color: 'text-emerald-300' },
-              { label: 'Taux',     value: `${successRate}%`, icon: <Lock size={14} className="text-violet-300"/>, color: 'text-violet-300' },
+              { label: 'Attaques', value: attackCount, color: '#fbbf24' },
+              { label: 'Bloquées', value: blockCount,  color: '#34d399' },
+              { label: 'Taux',     value: `${successRate}%`, color: '#a78bfa' },
             ].map(m => (
-              <div key={m.label} className="rounded-xl border border-white/8 bg-slate-900/50 p-3 text-center">
-                <div className="flex justify-center mb-1">{m.icon}</div>
-                <p className={`text-xl font-bold ${m.color}`}>{m.value}</p>
-                <p className="text-[10px] text-slate-500 mt-0.5">{m.label}</p>
+              <div key={m.label} style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: m.color }}>{m.value}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 10, color: '#64748b' }}>{m.label}</p>
               </div>
             ))}
           </div>
 
           {/* Boutons */}
-          <div className="flex gap-2">
+          <div style={{ display: 'flex', gap: 8 }}>
             <motion.button
-              type="button"
-              onClick={runKyc}
-              disabled={running}
               whileHover={{ y: -1 }}
               whileTap={{ scale: 0.97 }}
-              className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 text-sm transition hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-wait"
+              onClick={runKyc}
+              disabled={running}
+              style={{
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                background: running ? '#14532d' : '#34d399', color: '#0b1321',
+                border: 'none', borderRadius: 12, padding: '12px 16px',
+                fontSize: 14, fontWeight: 700, cursor: running ? 'wait' : 'pointer',
+                opacity: running ? 0.7 : 1,
+              }}
             >
-              <Shield size={16} fill="currentColor" />
+              <Shield size={15} fill="currentColor" />
               {running ? 'Traitement KYC…' : 'Lancer KYC complet'}
             </motion.button>
 
             {pdfUrl && (
-              <motion.a
+              <a
                 href={pdfUrl}
                 download={`kyc-${firstName}-${lastName}.pdf`}
-                whileHover={{ y: -1 }}
-                className="flex items-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-emerald-300 text-sm font-semibold hover:bg-emerald-400/15 transition"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '12px 14px',
+                  background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
+                  borderRadius: 12, color: '#6ee7b7', fontSize: 13, fontWeight: 600,
+                  textDecoration: 'none',
+                }}
               >
-                <Download size={15} /> Rapport PDF
-              </motion.a>
+                <Download size={14} /> PDF
+              </a>
             )}
           </div>
 
           {/* Résultat KYC */}
           {result && (
-            <div className={`rounded-xl border p-4 ${result.verdict === 'APPROVED' ? 'border-emerald-400/30 bg-emerald-400/5' : 'border-rose-400/30 bg-rose-400/5'}`}>
-              <p className="text-xs text-slate-400 uppercase tracking-wider mb-2 font-semibold">Rapport KYC</p>
-              <div className="grid grid-cols-2 gap-2 text-xs">
+            <div style={{
+              background: result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.05)' : 'rgba(244,63,94,0.05)',
+              border: `1px solid ${result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'}`,
+              borderRadius: 12, padding: 14,
+            }}>
+              <p style={{ margin: '0 0 8px', fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Rapport KYC</p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 8px' }}>
                 {[
-                  ['Verdict', result.verdict],
-                  ['Score',   `${result.score}%`],
+                  ['Verdict',           result.verdict],
+                  ['Score',             `${result.score}%`],
                   ['Attaques bloquées', String(result.attacks_blocked)],
-                  ['Chaîne intègre',   result.chain_intact ? 'OUI' : 'NON'],
-                  ['Session',  result.session_id.slice(0, 14) + '…'],
-                  ['Timestamp', new Date(result.timestamp).toLocaleTimeString()],
+                  ['Chaîne intègre',    result.chain_intact ? 'OUI' : 'NON'],
+                  ['Session',           result.session_id.slice(0, 12) + '…'],
+                  ['Heure',             new Date(result.timestamp).toLocaleTimeString()],
                 ].map(([k, v]) => (
-                  <div key={k} className="flex justify-between gap-1">
-                    <span className="text-slate-500">{k}</span>
-                    <span className="font-mono text-white">{v}</span>
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 4, fontSize: 11 }}>
+                    <span style={{ color: '#64748b' }}>{k}</span>
+                    <span style={{ color: '#f1f5f9', fontFamily: 'monospace' }}>{v}</span>
                   </div>
                 ))}
               </div>
@@ -273,31 +281,50 @@ export function KycPanel({ apiBase }: KycPanelProps) {
           )}
         </div>
 
-        {/* RIGHT — timeline forensic */}
-        <div className="p-5 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Timeline Forensic</p>
-            {running && <span className="flex items-center gap-1.5 text-[10px] text-cyan-300 animate-pulse"><span className="size-1.5 rounded-full bg-cyan-400 inline-block"/>LIVE</span>}
+        {/* ─ Colonne droite : timeline forensic ────────────────────────── */}
+        <div style={{ flex: '1 1 320px', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Timeline Forensic</p>
+            {running && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#22d3ee' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22d3ee', display: 'inline-block', animation: 'pulse 1s infinite' }} />
+                LIVE
+              </span>
+            )}
           </div>
 
-          <div ref={timelineRef} className="h-[360px] overflow-y-auto space-y-1.5 pr-1">
+          <div
+            ref={timelineRef}
+            style={{ height: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}
+          >
             {timeline.length === 0 ? (
-              <p className="text-xs text-slate-600 text-center py-10">Lance un scénario KYC pour voir les événements forensic en temps réel</p>
+              <p style={{ textAlign: 'center', color: '#334155', fontSize: 12, marginTop: 60 }}>
+                Lance un scénario KYC pour voir les événements en temps réel
+              </p>
             ) : (
               timeline.map(entry => (
                 <motion.div
                   key={entry.id}
-                  initial={{ opacity: 0, x: 8 }}
+                  initial={{ opacity: 0, x: 10 }}
                   animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.18 }}
-                  className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${TYPE_COLORS[entry.type]}`}
+                  transition={{ duration: 0.15 }}
+                  className={`border-l-2 ${TYPE_BG[entry.type]}`}
+                  style={{ borderRadius: '0 8px 8px 0', padding: '7px 10px', display: 'flex', alignItems: 'flex-start', gap: 7 }}
                 >
-                  {STATUS_ICON[entry.status]}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] font-semibold leading-tight">{entry.label}</p>
-                    {entry.detail && <p className="text-[10px] opacity-70 mt-0.5 font-mono truncate">{entry.detail}</p>}
+                  <StatusDot status={entry.status} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: 0, fontSize: 11, fontWeight: 600, lineHeight: 1.3 }} className={TYPE_TEXT[entry.type]}>
+                      {entry.label}
+                    </p>
+                    {entry.detail && (
+                      <p style={{ margin: '2px 0 0', fontSize: 10, color: '#64748b', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {entry.detail}
+                      </p>
+                    )}
                   </div>
-                  <span className="text-[9px] opacity-50 shrink-0 font-mono">{new Date(entry.ts).toLocaleTimeString()}</span>
+                  <span style={{ fontSize: 9, color: '#334155', fontFamily: 'monospace', flexShrink: 0 }}>
+                    {new Date(entry.ts).toLocaleTimeString()}
+                  </span>
                 </motion.div>
               ))
             )}
