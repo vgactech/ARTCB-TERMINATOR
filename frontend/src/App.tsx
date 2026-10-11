@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Activity, ShieldCheck, Play, CircleCheck } from 'lucide-react'
 import { KycPanel } from './components/KycPanel'
 import { LiveGuardianGraph } from './components/LiveGuardianGraph'
+import { PitchPage } from './components/PitchPage'
 import { AgentFlow } from './components/AgentFlow'
 import { ForensicPanel } from './components/ForensicPanel'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
@@ -44,7 +45,7 @@ function App() {
   const [showHudGraph,     setShowHudGraph]      = useState(true)
 
   // ── Active tab ────────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<'kyc' | 'scenarios'>('kyc')
+  const [tab, setTab] = useState<'pitch' | 'kyc' | 'scenarios'>('pitch')
 
   useEffect(() => {
     Promise.all([checkGuardianHealth(), listGuardianScenarios()])
@@ -147,16 +148,23 @@ function App() {
 
         {/* ── Tabs ──────────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-1 mb-6 bg-slate-950/50 rounded-xl p-1 border border-white/8 w-fit">
-          {(['kyc', 'scenarios'] as const).map(t => (
+          {([
+            { id: 'pitch',     label: '🏦 Pitch Jury' },
+            { id: 'kyc',       label: '🔍 KYC Forensic' },
+            { id: 'scenarios', label: '⚡ Scénarios Guardian' },
+          ] as const).map(t => (
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-500 hover:text-slate-300'}`}
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab === t.id ? 'bg-emerald-400/15 border border-emerald-400/30 text-emerald-300' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              {t === 'kyc' ? '🔍 KYC Forensic' : '⚡ Scénarios Guardian'}
+              {t.label}
             </button>
           ))}
         </div>
+
+        {/* ── Pitch Tab ─────────────────────────────────────────────────────── */}
+        {tab === 'pitch' && <PitchPage />}
 
         {/* ── KYC Tab ───────────────────────────────────────────────────────── */}
         {tab === 'kyc' && (
