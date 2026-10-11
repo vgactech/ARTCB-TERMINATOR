@@ -1,3 +1,22 @@
+export type KycStreamEvent = {
+  _type: string
+  [key: string]: unknown
+}
+
+export type KycResult = {
+  verdict: 'APPROVED' | 'REJECTED' | 'PENDING'
+  score: number
+  attacks_blocked: number
+  chain_intact: boolean
+  session_id: string
+  run_id: string
+  timestamp: string
+  first_name: string
+  last_name: string
+  doc_id: string
+  reason: string
+}
+
 export type GuardianStep = {
   step_id: string
   description: string

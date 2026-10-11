@@ -1,4 +1,5 @@
 """FastAPI bridge between the web interface and the Guardian demo engine."""
+# KYC stream endpoint registered at bottom of file
 
 from __future__ import annotations
 
@@ -502,6 +503,34 @@ def voice_status() -> dict[str, Any]:
             "attacker":     "SILENT — attacker has no voice",
         },
     }
+
+
+# ─── KYC Stream ───────────────────────────────────────────────────────────────
+
+@app.get("/api/kyc/stream")
+def kyc_stream(
+    first_name: str = "Alice",
+    last_name: str = "Dupont",
+    doc_id: str = "FR-2024-000000",
+    dob: str = "1990-01-01",
+) -> StreamingResponse:
+    """Server-Sent Events — full KYC scenario with PDF generation."""
+    from guardian_api.kyc_stream import kyc_stream_generator  # noqa: PLC0415
+
+    return StreamingResponse(
+        kyc_stream_generator(
+            first_name=first_name,
+            last_name=last_name,
+            doc_id=doc_id,
+            dob=dob,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.get("/api/scenarios")
