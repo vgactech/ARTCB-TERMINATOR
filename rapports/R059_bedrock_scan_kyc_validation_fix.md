@@ -3,7 +3,7 @@
 **Date**: 2026-10-11  
 **Model**: `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (meilleur disponible dans le compte hackathon)  
 **Commits**: `<see below>` — fix KYC validation `&&` → `||`  
-**Token STS**: renouvelé `[REDACTED]` (exp. 2026-10-11T12:18:07Z)
+**Token STS**: renouvelé ~~`ASIA3GKIQ53K6GZMHO34`~~ → `[REDACTED — GitHub secret alert #2 — 2026-10-11]` (exp. 2026-10-11T12:18:07Z)
 
 ---
 

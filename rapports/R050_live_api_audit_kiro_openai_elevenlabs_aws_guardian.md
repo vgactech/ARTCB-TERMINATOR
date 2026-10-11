@@ -60,7 +60,7 @@
 
 | Check | Result |
 |---|---|
-| Token `[REDACTED]` | ❌ `ExpiredTokenException` |
+| Token ~~`ASIA3GKIQ53KVTG7O3QJ`~~ → `[REDACTED — GitHub secret alert #1 — 2026-10-11]` | ❌ `ExpiredTokenException` |
 | Bedrock access | ❌ Blocked (token expired) |
 | EC2 instances visible | 0 (token expired — cannot confirm server state) |
 
