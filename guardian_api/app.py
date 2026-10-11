@@ -28,21 +28,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# GUARDIAN_FRONTEND_ORIGIN: set in Doppler aws/dev for AWS deployment
-_extra_origin = os.environ.get("GUARDIAN_FRONTEND_ORIGIN", "")
-_allowed_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-if _extra_origin:
-    _allowed_origins.append(_extra_origin)
-
+# CORS ouvert pour hackathon — jury peut accéder depuis n'importe quelle origine
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
