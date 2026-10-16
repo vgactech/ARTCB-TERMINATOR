@@ -227,3 +227,126 @@ Do not declare the demo competition-ready until these tests have evidence attach
 The recommended path is to first establish a reproducible, controlled KYC scenario, then connect its actual events to Guardian and the frontend, and only then add Screenpipe context as a separately labeled, optional evidence stream. This order prevents a visually convincing demo from overstating what was detected, blocked, or cryptographically verified.
 
 **No application code was changed. No logs were committed. No merge, rebase, or deployment was performed. The ARTCB-TERMINATOR repository's private visibility remains unchanged.**
+
+
+## 13. Scope clarification and revised competition direction (2026-10-16)
+
+This section refines the original R046 proposal to reflect the latest competition objective. It supplements the findings above; it does not erase unresolved prerequisites or convert unverified functionality into a completed implementation.
+
+### 13.1 Intended outcome
+
+The competition demo should present one coherent, real-time defensive story:
+
+1. The frontend shows a controlled KYC workflow and its normal baseline.
+2. A clearly identified attack simulation triggers a reproducible failure pattern in a dedicated test fixture.
+3. KYC/test-harness telemetry emits structured events.
+4. ARTCB/Guardian consumes the relevant events and produces a traceable defensive decision.
+5. The frontend renders the event sequence live, including detection, decision, confirmed containment, evidence and replay.
+6. Screenpipe contributes time-bounded operator context from its local memory/search capability, where available and explicitly enabled.
+7. The final view distinguishes what was observed, what was decided, what was confirmed, what came from Screenpipe, and what was simulated or inferred.
+
+The intended presentation is a live, time-correlated cyber-incident demonstration. Unless it is run against an authorized live environment with verified telemetry, it must be described as a **controlled real-time simulation**, not as a real external cyberattack. Never attack production KYC systems or third-party infrastructure for a competition demo.
+
+### 13.2 Repository responsibilities and boundaries
+
+The current repository observations remain important:
+
+- **ARTCB-TERMINATOR:** private; this repository is the audit/report coordination point. Its visibility must remain private for the competition team. The present task changes only this report.
+- **artcb_TERMINATOR_FRONTEND:** public at the time checked; its visible R001 is a frontend design specification, not proof of a fully implemented or connected interface.
+- **artcb_kyc:** public and empty at the time checked; no KYC implementation or reproducible defect can currently be verified from its contents.
+- **artcb:** private at the time checked; it is the ARTCB core repository. Its current implementation and data contracts must be inspected before deciding what “replace the blockchain” means technically.
+
+The latest direction mentions working on the frontend, KYC and ARTCB core. That is a multi-repository implementation phase, but R046 itself does not authorize or perform changes in those repositories. Before any code changes, establish a per-repository work plan and explicit file/branch boundaries. Keep ARTCB-TERMINATOR private, do not publish credentials or incident logs, and do not merge or deploy without a separately agreed release step. The public frontend and KYC repositories must contain synthetic demo data only unless their visibility is deliberately reviewed by the owner.
+
+### 13.3 Important correction: Screenpipe memory is not a blockchain replacement on a like-for-like basis
+
+The phrase “replace the blockchain with Screenpipe memory” needs a precise technical definition.
+
+**What Screenpipe can provide:** local-first capture and searchable context, including screen/application information and, when enabled, audio/transcription context. Its documented local API and installation path can make that context available to the demo. See https://screenpipe.com/how-to-install and https://github.com/screenpipe/screenpipe.
+
+**What a blockchain or append-only ledger is commonly intended to provide:** a tamper-evident history, ordered records, and a verification mechanism whose guarantees depend on the actual ledger design and deployment.
+
+These are different functions. Screenpipe memory is useful as a contextual retrieval layer, but it must not be presented as automatically immutable, consensus-backed, cryptographically authenticated, or equivalent to blockchain finality. Search results and captured screen context do not, by themselves, prove that a KYC state transition occurred or that a defensive action succeeded.
+
+**Recommended design for the competition:** replace the blockchain dependency in the demo's *context/memory presentation layer* with Screenpipe-backed searchable context, while retaining a separate evidence-integrity mechanism for security claims. For example, the demo can store normalized incident events and evidence references in an append-only event store or deterministic fixture, hash the exact evidence artifacts, and verify those hashes during replay. If the current ARTCB implementation relies on blockchain-specific guarantees for authorization, consensus, identity, or audit integrity, do not remove that dependency until each guarantee has a documented replacement and corresponding tests.
+
+The implementation decision must therefore be made per responsibility, not by swapping one product name for another:
+- Context retrieval and operator memory → Screenpipe adapter.
+- KYC state and authoritative business outcome → KYC service/test fixture.
+- Detection and policy decision → ARTCB/Guardian service.
+- Evidence provenance and integrity → explicit event/evidence contract plus a verified integrity mechanism.
+- User-facing visualization and replay → frontend.
+
+### 13.4 Screenpipe integration contract
+
+The frontend should not directly treat arbitrary Screenpipe results as security events. Use a small adapter boundary with these responsibilities:
+
+- Check the local service's health before attempting context retrieval.
+- Query only the relevant incident time window and necessary content types.
+- Preserve source, capture/query timestamps, result references and available integrity metadata.
+- Normalize results into a distinct `context_evidence` type; do not convert them into authoritative KYC or Guardian events.
+- Mark the context as unavailable, denied, stale or empty when appropriate.
+- Keep the demo functional when Screenpipe is not installed, is stopped, or has no matching result.
+- Make capture opt-in and explain the screen/audio scope to the operator; use filters and avoid unrelated personal, identity or secret data.
+- Keep Screenpipe access local by default. Any sync, export, cloud transcription or external AI path must be separately configured and disclosed.
+- Review the current Screenpipe installation instructions, API behavior, security guidance and license before bundling or redistributing any component.
+
+A useful frontend label is **“Screenpipe context — corroborative, not authoritative.”** This communicates the role without overstating the evidence.
+
+### 13.5 Minimum live-demo wiring
+
+The smallest end-to-end vertical slice should be implemented and verified in this order:
+
+1. **Scenario controller:** starts, stops and resets one deterministic synthetic KYC incident. Each run receives a unique scenario ID.
+2. **KYC fixture:** exposes the normal and failure states needed for the scenario, with synthetic identities only.
+3. **Event adapter:** maps KYC and test-harness events into a versioned envelope with event ID, scenario ID, correlation ID, source, event time, ingestion time, event type, status and evidence references.
+4. **ARTCB/Guardian adapter:** submits or consumes the supported event contract and returns an identifiable policy decision. The actual endpoint and schema must be discovered from source; do not invent an API contract.
+5. **Live frontend stream:** updates the timeline and graph as events arrive. Reconnection, duplicate events and out-of-order events must be handled explicitly.
+6. **Screenpipe context adapter:** enriches the matching time window independently; timeout or failure must not block the defensive event path.
+7. **Evidence inspector and replay:** allows the presenter to inspect source and provenance, replay the incident, and verify the recorded evidence-integrity result.
+8. **Demo reset and fallback:** returns to baseline without deleting the saved run evidence; a no-Screenpipe run and a no-camera/no-audio run must still work.
+
+Do not start with visual polish or an elaborate 3D scene if the event path is not proven. The competition-critical proof is the connected incident lifecycle; 3D, gestures, voice and narration are presentation layers that must not control the defensive decision.
+
+### 13.6 Competition acceptance criteria
+
+In addition to Section 10, the following are required before describing the system as wired end-to-end:
+
+- [ ] A single documented command or UI action starts a deterministic demo run.
+- [ ] The KYC failure mode is linked to an actual source commit and regression test, or the UI clearly labels it as synthetic.
+- [ ] A scenario ID can be followed from KYC through ARTCB/Guardian into the frontend and replay.
+- [ ] The UI shows event time and receive time separately and exposes missing/delayed telemetry.
+- [ ] The displayed defensive decision is backed by an actual response/event, not by animation.
+- [ ] “Blocked” or “contained” appears only after a confirming result or assertion.
+- [ ] Screenpipe context is provenance-labeled and cannot overwrite KYC state or Guardian decisions.
+- [ ] The demo still runs when Screenpipe is offline or permission is denied.
+- [ ] The blockchain-removal decision lists every guarantee being removed and the replacement test for each one.
+- [ ] A replay detects tampering in any artifact for which integrity verification is claimed.
+- [ ] Public repositories contain no credentials, raw KYC data, personal screen/audio captures or runtime logs.
+- [ ] The private visibility of ARTCB-TERMINATOR is checked again after report updates.
+
+### 13.7 Immediate next actions
+
+**P0 — Resolve the KYC source gap.** Populate or identify the authorized KYC implementation, pin its commit, and provide the failing test/expected-vs-actual behavior. Until then, use an explicit synthetic fixture.
+
+**P0 — Map the actual ARTCB integration boundary.** Inspect the existing event, policy and storage contracts in the core repository before deciding which blockchain responsibilities are relevant to this frontend demo. Do not assume that the frontend can safely replace core persistence or authorization.
+
+**P0 — Verify the frontend baseline.** Confirm the actual framework, package scripts, build/test commands, and current Screenpipe-related files. The R001 document alone does not prove those components exist in executable form.
+
+**P1 — Build the incident vertical slice.** Connect one scenario to one real event path, one defensive decision, one live timeline and one replay before expanding to multiple attack types.
+
+**P1 — Add Screenpipe context as an optional adapter.** Validate installation, local service health, query scope, permissions, offline behavior and licensing against the currently installed version.
+
+**P1 — Decide ledger replacement by guarantee.** Produce a short mapping from each blockchain-dependent responsibility to its proposed replacement, threat assumptions and automated acceptance test. Screenpipe memory alone is not an integrity substitute.
+
+**P2 — Add presentation features.** Only after the core flow passes should the team add richer 3D visualization, gesture controls, voice narration and polished pitch choreography.
+
+---
+
+## 14. Updated final audit statement
+
+The clarified competition objective is a connected frontend/KYC/ARTCB defensive incident demonstration, with Screenpipe providing optional searchable operator context in place of blockchain-backed context retrieval where appropriate. It is not technically accurate to claim that Screenpipe memory is a direct substitute for every property a blockchain may provide. Preserve explicit evidence integrity and authoritative KYC/Guardian outcomes independently.
+
+The immediate blockers remain the empty KYC repository and the lack of verified executable frontend integration in the evidence reviewed. The next step is to establish the real KYC reproduction and inspect the actual ARTCB/frontend contracts, then connect the smallest complete vertical slice. Until that work is performed and tested, describe the result as a design and integration plan, not a completed live system.
+
+**This update changes only R046 in the private ARTCB-TERMINATOR repository on the existing experiment branch. It does not change application code, the ARTCB core, the frontend repository, the KYC repository, repository visibility, deployment state, or runtime logs.**
