@@ -13,3 +13,7 @@ DOPPLER_LOGIN.bat
 # Fichiers d'environnement local
 .env.local
 
+
+# Répertoire de build Rust
+guardian_core/target/
+target/

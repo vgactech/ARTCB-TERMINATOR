@@ -962,3 +962,209 @@ def test_artcb_bridge_call_tool_raises_when_unavailable(
     bridge = ArtcbMcpBridge()
     with pytest.raises(RuntimeError, match="unreachable|ARTCB|HTTP"):
         bridge.call_tool("artcb_chain_verify", {})
+
+# ─── Demo Scenario + Screenpipe endpoints — R064 ─────────────────────────────
+
+
+def test_demo_status_idle() -> None:
+    """GET /api/demo/status returns IDLE when no run is active."""
+    # Reset first to ensure clean state across test runs
+    client.post("/api/demo/reset")
+    response = client.get("/api/demo/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["state"] == "IDLE"
+    assert data["run_id"] is None
+    assert data["certified_100"] is False
+    assert data["unique_human_proven"] is False
+
+
+def test_demo_scenarios_list() -> None:
+    """GET /api/demo/scenarios returns at least 3 scenarios with required fields."""
+    response = client.get("/api/demo/scenarios")
+    assert response.status_code == 200
+    scenarios = response.json()
+    assert len(scenarios) >= 3
+    for s in scenarios:
+        assert "id" in s
+        assert "name" in s
+        assert "description" in s
+        assert "risk" in s
+        assert s["data_source"] == "SIMULATED"
+
+
+def test_demo_phases_list() -> None:
+    """GET /api/demo/phases returns 4 ordered phases."""
+    response = client.get("/api/demo/phases")
+    assert response.status_code == 200
+    phases = response.json()
+    assert len(phases) == 4
+    phase_ids = [p["phase"] for p in phases]
+    assert phase_ids == ["DETECTION", "DECISION", "CONTAINMENT", "RECOVERY"]
+    for p in phases:
+        assert "label" in p
+
+
+def test_demo_start_default_scenario() -> None:
+    """POST /api/demo/start returns a RUNNING run with KYC fixture."""
+    client.post("/api/demo/reset")
+    response = client.post("/api/demo/start")
+    assert response.status_code == 200
+    run = response.json()
+    assert run["state"] == "RUNNING"
+    assert run["scenario_id"] == "kyc-attack"
+    assert run["current_phase"] == "DETECTION"
+    assert run["run_id"].startswith("run:")
+    assert run["certified_100"] is False
+    assert run["unique_human_proven"] is False
+    # KYC fixture present and SIMULATED
+    kyc = run["kyc_result"]
+    assert kyc is not None
+    assert kyc["data_source"] == "SIMULATED"
+    assert kyc["certified_100"] is False
+    assert len(kyc["events"]) > 0
+    assert kyc["verdict"] in ("APPROVED", "REJECTED", "PENDING")
+
+
+def test_demo_start_custom_scenario() -> None:
+    """POST /api/demo/start with scenario_id=kyc-prompt-injection."""
+    client.post("/api/demo/reset")
+    response = client.post("/api/demo/start?scenario_id=kyc-prompt-injection")
+    assert response.status_code == 200
+    run = response.json()
+    assert run["scenario_id"] == "kyc-prompt-injection"
+    assert run["state"] == "RUNNING"
+
+
+def test_demo_start_unknown_scenario_returns_400() -> None:
+    """POST /api/demo/start with unknown scenario_id returns HTTP 400."""
+    client.post("/api/demo/reset")
+    response = client.post("/api/demo/start?scenario_id=does-not-exist")
+    assert response.status_code == 400
+    assert "does-not-exist" in response.json()["detail"]
+
+
+def test_demo_advance_through_all_phases() -> None:
+    """POST /api/demo/advance cycles through all 4 phases then completes."""
+    client.post("/api/demo/reset")
+    client.post("/api/demo/start")
+
+    expected_phases = ["DECISION", "CONTAINMENT", "RECOVERY", None]
+    for expected_phase in expected_phases:
+        response = client.post("/api/demo/advance")
+        assert response.status_code == 200
+        run = response.json()
+        if expected_phase is None:
+            # Final advance: scenario completed
+            assert run["state"] == "COMPLETED"
+            assert run["current_phase"] is None
+        else:
+            assert run["current_phase"] == expected_phase
+            assert run["state"] == "RUNNING"
+
+
+def test_demo_advance_without_active_run_returns_400() -> None:
+    """POST /api/demo/advance without a started scenario returns HTTP 400."""
+    client.post("/api/demo/reset")
+    response = client.post("/api/demo/advance")
+    assert response.status_code == 400
+
+
+def test_demo_reset_returns_previous_run_id() -> None:
+    """POST /api/demo/reset includes previous run_id in response."""
+    client.post("/api/demo/reset")
+    start_response = client.post("/api/demo/start")
+    run_id = start_response.json()["run_id"]
+
+    reset_response = client.post("/api/demo/reset")
+    assert reset_response.status_code == 200
+    result = reset_response.json()
+    assert result["reset"] is True
+    assert result["previous_run_id"] == run_id
+    assert result["state"] == "IDLE"
+
+
+def test_demo_reset_when_idle() -> None:
+    """POST /api/demo/reset on idle controller returns None for previous_run_id."""
+    client.post("/api/demo/reset")  # ensure idle
+    response = client.post("/api/demo/reset")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["previous_run_id"] is None
+
+
+def test_demo_status_reflects_running_state() -> None:
+    """GET /api/demo/status after start returns RUNNING with correct run_id."""
+    client.post("/api/demo/reset")
+    start_data = client.post("/api/demo/start").json()
+    status_data = client.get("/api/demo/status").json()
+    assert status_data["state"] == "RUNNING"
+    assert status_data["run_id"] == start_data["run_id"]
+
+
+def test_demo_kyc_fixture_has_correct_structure() -> None:
+    """KYC fixture in demo run has expected identity and events fields."""
+    client.post("/api/demo/reset")
+    run = client.post("/api/demo/start?first_name=Bob&last_name=Martin&doc_id=FR-TEST-001").json()
+    kyc = run["kyc_result"]
+    identity = kyc["identity"]
+    assert identity["first_name"] == "Bob"
+    assert identity["last_name"] == "Martin"
+    assert identity["doc_id"] == "FR-TEST-001"
+    assert identity["source"] == "SIMULATED"
+    assert kyc["attacks_blocked"] >= 1
+    assert 0 <= kyc["score"] <= 100
+    assert len(kyc["chain_hash"]) == 64  # SHA-256 hex
+
+
+def test_screenpipe_context_offline_fallback() -> None:
+    """GET /api/screenpipe/context returns offline_fallback when SCREENPIPE_API_URL is unset."""
+    import os
+    os.environ.pop("SCREENPIPE_API_URL", None)
+    response = client.get("/api/screenpipe/context")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "offline_fallback"
+    assert data["available"] is False
+    assert isinstance(data["events"], list)
+    assert len(data["events"]) >= 1
+    assert "limit_applied" in data
+    assert "note" in data
+    # Each event has required fields
+    for event in data["events"]:
+        assert "timestamp" in event
+        assert "app_name" in event
+        assert "text" in event
+        assert "event_type" in event
+
+
+def test_screenpipe_context_limit_parameter() -> None:
+    """GET /api/screenpipe/context?limit=2 returns at most 2 events."""
+    import os
+    os.environ.pop("SCREENPIPE_API_URL", None)
+    response = client.get("/api/screenpipe/context?limit=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["events"]) <= 2
+    assert data["limit_applied"] == 2
+
+
+def test_screenpipe_context_limit_out_of_range() -> None:
+    """GET /api/screenpipe/context with limit=0 returns 422 validation error."""
+    response = client.get("/api/screenpipe/context?limit=0")
+    assert response.status_code == 422
+
+
+def test_screenpipe_context_unreachable_url_falls_back() -> None:
+    """GET /api/screenpipe/context with unreachable URL returns offline_fallback."""
+    import os
+    os.environ["SCREENPIPE_API_URL"] = "http://127.0.0.1:19998"
+    try:
+        response = client.get("/api/screenpipe/context")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source"] == "offline_fallback"
+        assert data["available"] is False
+    finally:
+        os.environ.pop("SCREENPIPE_API_URL", None)
+

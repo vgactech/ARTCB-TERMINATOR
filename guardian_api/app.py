@@ -7,11 +7,12 @@ import base64
 import hashlib
 import json
 import os
+import time
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any, Generator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
@@ -20,6 +21,7 @@ from guardian_mcp.agents import OrchestratorAgent, PropagatorAgent
 from guardian_mcp.attacker_agent import AttackerAgent
 from guardian_mcp.defender_agent import DefenderAgent
 from guardian_mcp.instrumentation import GENESIS_HASH
+from guardian_api.scenario_controller import scenario_controller
 
 
 app = FastAPI(
@@ -494,6 +496,178 @@ def voice_status() -> dict[str, Any]:
             "defender":     _VOICE_DEFENDER,
             "attacker":     "SILENT — attacker has no voice",
         },
+    }
+
+
+# ─── Demo Scenario endpoints (ScenarioController) ────────────────────────────
+
+
+@app.get("/api/demo/status")
+def demo_status() -> dict[str, Any]:
+    """Return the current demo scenario state (IDLE / RUNNING / COMPLETED)."""
+    return scenario_controller.status()
+
+
+@app.get("/api/demo/scenarios")
+def demo_scenarios() -> list[dict[str, Any]]:
+    """List all available demo scenarios with id, name, description and risk."""
+    return scenario_controller.available_scenarios()
+
+
+@app.get("/api/demo/phases")
+def demo_phases() -> list[dict[str, str]]:
+    """Return the ordered list of demo phases with human-readable labels."""
+    return scenario_controller.phase_labels()
+
+
+@app.post("/api/demo/start")
+def demo_start(
+    scenario_id: str = Query(default="kyc-attack", description="Demo scenario id"),
+    first_name: str = Query(default="Alice"),
+    last_name: str = Query(default="Dupont"),
+    doc_id: str = Query(default="FR-2024-000000"),
+    dob: str = Query(default="1990-01-01"),
+) -> dict[str, Any]:
+    """Start a demo scenario run. Resets any previous COMPLETED/ERROR run automatically.
+
+    Returns a ScenarioRun dict with:
+      - run_id, scenario_id, state (RUNNING), current_phase (DETECTION)
+      - kyc_result (SIMULATED fixture — no real PII)
+      - certified_100=false, unique_human_proven=false
+    """
+    try:
+        run = scenario_controller.start(
+            scenario_id=scenario_id,
+            first_name=first_name,
+            last_name=last_name,
+            doc_id=doc_id,
+            dob=dob,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return run.to_dict()
+
+
+@app.post("/api/demo/advance")
+def demo_advance() -> dict[str, Any]:
+    """Advance the active scenario to the next phase.
+
+    Phase order: DETECTION -> DECISION -> CONTAINMENT -> RECOVERY -> COMPLETED
+    Returns 400 if no scenario is currently active (call /api/demo/start first).
+    """
+    try:
+        run = scenario_controller.advance_phase()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return run.to_dict()
+
+
+@app.post("/api/demo/reset")
+def demo_reset() -> dict[str, Any]:
+    """Reset the scenario controller to IDLE.
+
+    The previous run_id is included in the response for audit purposes.
+    The archive is NOT wiped — reset only clears the in-memory pointer.
+    """
+    return scenario_controller.reset()
+
+
+# ─── Screenpipe context endpoint (offline fallback) ───────────────────────────
+
+
+@app.get("/api/screenpipe/context")
+def screenpipe_context(
+    limit: int = Query(default=5, ge=1, le=50, description="Number of recent events to return"),
+) -> dict[str, Any]:
+    """Return Screenpipe operator context or a structured offline fallback.
+
+    Live mode: reads SCREENPIPE_API_URL env var and calls the local Screenpipe
+    HTTP API (GET /search?limit=N).  The response is normalised so the frontend
+    always receives the same schema regardless of whether Screenpipe is running.
+
+    Offline fallback: when SCREENPIPE_API_URL is unset or the local API is
+    unreachable, returns a structured OFFLINE payload with demo-safe events so
+    the Guardian demo continues without a Screenpipe installation.
+
+    Response schema:
+      source        : "screenpipe_live" | "offline_fallback"
+      available     : bool
+      events        : list of {timestamp, app_name, text, event_type}
+      limit_applied : int
+      note          : human-readable status for the frontend HUD
+    """
+    import urllib.request
+    import urllib.error
+
+    api_url = os.environ.get("SCREENPIPE_API_URL", "")
+
+    if api_url:
+        try:
+            req_url = f"{api_url.rstrip('/')}/search?limit={limit}&content_type=all"
+            with urllib.request.urlopen(req_url, timeout=3) as resp:  # noqa: S310
+                raw = json.loads(resp.read().decode())
+            # Normalise Screenpipe response — field names differ between versions
+            events = []
+            for item in (raw.get("data") or raw.get("results") or []):
+                events.append({
+                    "timestamp": item.get("timestamp") or item.get("created_at") or "",
+                    "app_name": item.get("app_name") or item.get("application") or "unknown",
+                    "text": (item.get("content") or {}).get("text") or item.get("text") or "",
+                    "event_type": item.get("type") or "screen",
+                })
+            return {
+                "source": "screenpipe_live",
+                "available": True,
+                "events": events[:limit],
+                "limit_applied": limit,
+                "note": f"Live context from Screenpipe ({len(events)} events)",
+            }
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            pass  # fall through to offline fallback
+
+    # ── Offline fallback — deterministic demo events ──────────────────────────
+    now = time.time()
+    fallback_events = [
+        {
+            "timestamp": now - 300,
+            "app_name": "Guardian Console",
+            "text": "Operator opened Guardian Security Console — demo mode active",
+            "event_type": "screen",
+        },
+        {
+            "timestamp": now - 240,
+            "app_name": "Terminal",
+            "text": "uvicorn guardian_api.app:app --host 0.0.0.0 --port 8000",
+            "event_type": "screen",
+        },
+        {
+            "timestamp": now - 180,
+            "app_name": "Guardian Console",
+            "text": "KYC pipeline initialised — SIMULATED fixture loaded",
+            "event_type": "screen",
+        },
+        {
+            "timestamp": now - 120,
+            "app_name": "Guardian Console",
+            "text": "Attacker agent detected — policy evaluation starting",
+            "event_type": "screen",
+        },
+        {
+            "timestamp": now - 60,
+            "app_name": "Guardian Console",
+            "text": "Guardian blocked wallet.sign — R0 chain sealed, PDF ready",
+            "event_type": "screen",
+        },
+    ]
+    return {
+        "source": "offline_fallback",
+        "available": False,
+        "events": fallback_events[:limit],
+        "limit_applied": limit,
+        "note": (
+            "Screenpipe not detected (SCREENPIPE_API_URL unset or unreachable). "
+            "Serving offline demo context — Guardian demo continues normally."
+        ),
     }
 
 
