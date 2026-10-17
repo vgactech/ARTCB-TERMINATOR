@@ -248,28 +248,60 @@ def kyc_stream_generator(
     time.sleep(0.2)
 
     # ── S1b: Document validation check ────────────────────────────────────
-    # Validates doc_id format and dob plausibility.
-    # Emitted regardless of identity_ok so the frontend always receives it.
-    doc_format_ok = bool(doc_id and len(doc_id) >= 6)
-    dob_plausible = bool(dob and len(dob) == 10 and dob[4] == "-" and dob[7] == "-")
-    validation_status = "PASS" if (doc_format_ok and dob_plausible) else "WARN"
+    # R090 — strict calendar validation:
+    #   • doc_id : at least 6 non-whitespace characters
+    #   • dob    : parseable YYYY-MM-DD, year 1900–2100, real calendar date
+    #              (rejects 31-02, month > 12, future birth dates beyond 2100, etc.)
+    # Any FAIL here terminates the pipeline with REJECTED — no downstream steps run.
+    doc_format_ok = bool(doc_id and doc_id.strip() and len(doc_id.strip()) >= 6)
+
+    dob_ok = False
+    dob_fail_reason = ""
+    if not dob or not dob.strip():
+        dob_fail_reason = "dob is empty or blank"
+    else:
+        try:
+            parsed_dob = datetime.strptime(dob.strip(), "%Y-%m-%d")
+            year = parsed_dob.year
+            if year < 1900 or year > 2100:
+                dob_fail_reason = f"dob year {year} out of plausible range [1900-2100]"
+            else:
+                dob_ok = True
+        except ValueError as exc:
+            dob_fail_reason = f"dob not a valid calendar date: {exc}"
+
     validation_checks_failed: list[str] = []
     if not doc_format_ok:
         validation_checks_failed.append("doc_id too short or missing (min 6 chars)")
-    if not dob_plausible:
-        validation_checks_failed.append("dob not in expected format YYYY-MM-DD")
+    if not dob_ok:
+        validation_checks_failed.append(dob_fail_reason or "dob validation failed")
+
+    validation_status = "PASS" if (doc_format_ok and dob_ok) else "FAIL"
+
     yield _sse("kyc_validation_check", {
         "status":        validation_status,
         "doc_format_ok": doc_format_ok,
-        "dob_plausible": dob_plausible,
+        "dob_ok":        dob_ok,
         "checks_failed": validation_checks_failed,
         "detail": (
             "Document validation passed"
             if validation_status == "PASS"
-            else f"Validation warning: {'; '.join(validation_checks_failed)}"
+            else f"Validation failed: {'; '.join(validation_checks_failed)}"
         ),
     })
     time.sleep(0.15)
+
+    # R090 — any validation failure is a hard REJECT (no downstream steps)
+    if validation_status == "FAIL":
+        yield _sse("kyc_result", {
+            "verdict": "REJECTED", "score": 0,
+            "attacks_blocked": 0, "chain_intact": False,
+            "session_id": context.session_id, "run_id": context.run_id,
+            "timestamp": timestamp, "first_name": first_name, "last_name": last_name,
+            "doc_id": doc_id, "reason": f"Document invalide: {'; '.join(validation_checks_failed)}",
+        })
+        yield _sse("done", {"pdf_b64": None})
+        return
 
     if not identity_ok:
         yield _sse("kyc_result", {

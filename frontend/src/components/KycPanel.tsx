@@ -197,7 +197,9 @@ export function KycPanel({ apiBase }: KycPanelProps) {
                 dispatch('done', d as KycStreamEvent)
                 if (d.pdf_b64) {
                   const blob = new Blob([Uint8Array.from(atob(d.pdf_b64 as string), c => c.charCodeAt(0))], { type: 'application/pdf' })
-                  setPdfUrl(URL.createObjectURL(blob))
+                  // F086-02b R090 — revoke the previous Blob URL before creating a new one
+                  // to avoid memory leaks when runKyc() is called multiple times in the same session.
+                  setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob) })
                 }
                 setRunning(false)
                 break
@@ -226,7 +228,11 @@ export function KycPanel({ apiBase }: KycPanelProps) {
               curEvent = line.slice(6).trim()
             } else if (line.startsWith('data:')) {
               // F086-03d — multi-line data: append avec \n (spec SSE §6.2)
-              curData = curData ? curData + '\n' + line.slice(5).trim() : line.slice(5).trim()
+              // R090 — spec SSE §6.3 : strip ONE optional leading space (U+0020) after 'data:'.
+              // Do NOT use .trim() — trailing/internal spaces may be significant in JSON values.
+              const raw = line.slice(5)
+              const dataValue = raw.startsWith(' ') ? raw.slice(1) : raw
+              curData = curData ? curData + '\n' + dataValue : dataValue
             } else if (line === '' && curData) {
               handleEvent(curEvent, curData)
               curEvent = 'message'

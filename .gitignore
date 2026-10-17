@@ -14,6 +14,9 @@ DOPPLER_LOGIN.bat
 .env.local
 
 
+# Logs d'exécution — ne jamais committer (R090 — L-048 style)
+logs/
+
 # Répertoire de build Rust
 guardian_core/target/
 target/
