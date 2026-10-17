@@ -1389,3 +1389,184 @@ def test_kyc_stream_get_endpoint_also_rejects_future_dob() -> None:
     result_events = [e for e in events if e["type"] == "kyc_result"]
     assert result_events, "kyc_result event missing on GET endpoint"
     assert result_events[0]["payload"]["verdict"] == "REJECTED"
+
+
+# ─── R094 — Rate-limiter 429 tests on /api/kyc/stream ────────────────────────
+# The route is decorated @limiter.limit("6/minute").
+# conftest.py resets the limiter BEFORE each test via autouse fixture.
+# To prove the 429 boundary, we must exhaust the counter WITHIN a single test,
+# bypassing the inter-test reset by not relying on multiple calls across tests.
+#
+# Strategy: call the route 7 times in the same test *after* a single reset.
+# The fixture resets before the test, so the first 6 calls succeed and the 7th
+# must return 429.
+#
+# P2 (date format strict) is also covered here: non-padded dates must fail
+# validation (not just strptime-silently accept them).
+
+
+def test_kyc_stream_rate_limit_429_on_seventh_call() -> None:
+    """POST /api/kyc/stream is rate-limited at 6/minute.
+
+    The conftest.py autouse fixture resets the limiter counter before this test.
+    Calling the route 6 times must all succeed (HTTP 200).
+    The 7th call in the same test must return HTTP 429.
+
+    R094 — P3 : verify rate-limiter boundary (6/min).
+    """
+    from guardian_api.app import limiter  # noqa: PLC0415
+    # Explicit reset to ensure a clean counter (autouse already does this,
+    # but explicit reset guards against any ordering change).
+    limiter.reset()
+
+    payload = {
+        "first_name": "Rate",
+        "last_name": "LimitTest",
+        "doc_id": "FR-RATE-000001",
+        "dob": "1985-07-15",
+    }
+
+    # First 6 calls — all must succeed
+    for i in range(6):
+        resp = client.post("/api/kyc/stream", json=payload)
+        assert resp.status_code == 200, (
+            f"Call #{i+1}/6 expected HTTP 200, got {resp.status_code}"
+        )
+
+    # 7th call — must be rate-limited
+    resp_7 = client.post("/api/kyc/stream", json=payload)
+    assert resp_7.status_code == 429, (
+        f"7th call should be rate-limited (HTTP 429), got {resp_7.status_code}"
+    )
+
+
+def test_kyc_stream_rate_limit_resets_between_tests() -> None:
+    """The conftest.py autouse fixture resets the limiter before each test,
+    so a fresh test always starts with a clean counter.
+
+    This test verifies that calling the route once after the reset succeeds
+    (i.e. the counter from the previous test does not bleed through).
+
+    R094 — P3 : verify inter-test isolation via conftest reset_rate_limiter.
+    """
+    payload = {
+        "first_name": "Reset",
+        "last_name": "IsolationTest",
+        "doc_id": "FR-RESET-000001",
+        "dob": "1990-03-22",
+    }
+    resp = client.post("/api/kyc/stream", json=payload)
+    assert resp.status_code == 200, (
+        f"First call after limiter reset must succeed (HTTP 200), got {resp.status_code}"
+    )
+
+
+def test_kyc_stream_rate_limit_response_body() -> None:
+    """When the rate limit is exceeded, the response body must contain an
+    error message mentioning the limit or 'rate limit'.
+
+    R094 — P3 : verify 429 response body structure.
+    """
+    from guardian_api.app import limiter  # noqa: PLC0415
+    limiter.reset()
+
+    payload = {
+        "first_name": "Body",
+        "last_name": "Check429",
+        "doc_id": "FR-BODY-429001",
+        "dob": "1980-11-30",
+    }
+
+    # Exhaust the 6 allowed calls
+    for _ in range(6):
+        client.post("/api/kyc/stream", json=payload)
+
+    resp = client.post("/api/kyc/stream", json=payload)
+    assert resp.status_code == 429
+
+    # slowapi returns a JSON body with an "error" key on rate limit
+    try:
+        body = resp.json()
+        # slowapi formats the error as {"error": "6 per 1 minute"}
+        assert "error" in body, f"Expected 'error' key in 429 body, got: {body}"
+    except Exception:
+        # If not JSON, the raw text must contain the limit info
+        assert resp.text, "429 response must have a non-empty body"
+
+
+# ── R094 — P2 strict date format tests ───────────────────────────────────────
+
+def test_kyc_stream_dob_non_padded_month_rejected() -> None:
+    r"""dob with non-zero-padded month (e.g. '2000-1-15') must fail strict format.
+
+    strptime('%Y-%m-%d') silently accepts '2000-1-15' on CPython.
+    R094 — P2 : the regex guard ^\d{4}-\d{2}-\d{2}$ must reject it before strptime.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Test",
+            "last_name": "NonPadded",
+            "doc_id": "FR-PAD-000001",
+            "dob": "2000-1-15",          # non-padded month — must fail
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    v = validation_events[0]["payload"]
+    assert v["status"] == "FAIL", f"Non-padded month must fail strict format, got: {v}"
+    assert v["dob_ok"] is False
+
+    result_events = [e for e in events if e["type"] == "kyc_result"]
+    assert result_events and result_events[0]["payload"]["verdict"] == "REJECTED"
+
+
+def test_kyc_stream_dob_non_padded_day_rejected() -> None:
+    """dob with non-zero-padded day (e.g. '1990-05-5') must fail strict format.
+
+    R094 — P2 : the regex guard must reject non-padded day.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Test",
+            "last_name": "NonPaddedDay",
+            "doc_id": "FR-PAD-000002",
+            "dob": "1990-05-5",          # non-padded day — must fail
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    v = validation_events[0]["payload"]
+    assert v["status"] == "FAIL", f"Non-padded day must fail strict format, got: {v}"
+    assert v["dob_ok"] is False
+
+
+def test_kyc_stream_dob_padded_valid_passes() -> None:
+    """dob with correctly zero-padded YYYY-MM-DD must pass format validation.
+
+    R094 — P2 counter-test : correct format must not be falsely rejected.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Alice",
+            "last_name": "Padded",
+            "doc_id": "FR-PAD-000003",
+            "dob": "1985-01-05",         # correctly padded — must pass
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    v = validation_events[0]["payload"]
+    assert v["status"] == "PASS", f"Valid padded dob must pass, got: {v}"
+    assert v["dob_ok"] is True

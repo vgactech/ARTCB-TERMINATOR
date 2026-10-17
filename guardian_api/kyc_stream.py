@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import os
+import re
 import textwrap
 import time
 import uuid
@@ -255,10 +256,20 @@ def kyc_stream_generator(
     # Any FAIL here terminates the pipeline with REJECTED — no downstream steps run.
     doc_format_ok = bool(doc_id and doc_id.strip() and len(doc_id.strip()) >= 6)
 
+    # R094 — P2 : strict date format check BEFORE strptime.
+    # strptime("%Y-%m-%d") accepts "2000-1-1" (non-padded month/day) on some Python
+    # implementations.  The regex enforces exactly 4-2-2 digits (zero-padded).
+    _DOB_STRICT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
     dob_ok = False
     dob_fail_reason = ""
     if not dob or not dob.strip():
         dob_fail_reason = "dob is empty or blank"
+    elif not _DOB_STRICT_RE.match(dob.strip()):
+        dob_fail_reason = (
+            f"dob {dob.strip()!r} does not match strict format YYYY-MM-DD "
+            f"(zero-padded month and day required)"
+        )
     else:
         try:
             parsed_dob = datetime.strptime(dob.strip(), "%Y-%m-%d")
