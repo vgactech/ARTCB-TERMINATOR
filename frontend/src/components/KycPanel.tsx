@@ -16,6 +16,11 @@
  * R088 — F086-03b : flush event pending à fin de stream (pas de trailing newline).
  * R088 — F086-03c : normalisation CRLF → LF avant split.
  * R088 — F086-03d : multi-line data: append (spec SSE §6.2).
+ *
+ * R092 — P2 : Blob URL cycle de vie isolé dans un ref dédié (pdfUrlRef).
+ *             L'effet de bord URL.revokeObjectURL() ne se trouve plus dans
+ *             un setState updater ni dans un useEffect retournant une mise à jour
+ *             d'état — conformément aux règles React pures sur les setters.
  */
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -77,17 +82,24 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [blockCount,  setBlockCount]  = useState(0)
   const timelineRef = useRef<HTMLDivElement>(null)
   const esRef       = useRef<AbortController | null>(null)
+  // R092 — P2 : ref dédié au cycle de vie de la Blob URL.
+  // L'URL courante est stockée ici pour que le revoke soit un effet de bord pur
+  // (jamais dans un setState updater ni dans un useEffect retournant un setState).
+  const pdfUrlRef   = useRef<string | null>(null)
 
   useEffect(() => {
     if (timelineRef.current)
       timelineRef.current.scrollTop = timelineRef.current.scrollHeight
   }, [timeline])
 
-  // F086-02b — R088 : revoke Blob URL à l'unmount pour libérer la mémoire
-  //            même si reset() n'est pas appelé avant la destruction du composant
+  // R092 — P2 : revoke Blob URL à l'unmount — effet de bord dans useEffect,
+  //             pas dans un setState updater (anti-pattern React corrigé).
   useEffect(() => {
     return () => {
-      setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+      if (pdfUrlRef.current) {
+        URL.revokeObjectURL(pdfUrlRef.current)
+        pdfUrlRef.current = null
+      }
     }
   }, [])
 
@@ -103,8 +115,12 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     esRef.current?.abort()
     setTimeline([])
     setResult(null)
-    // F086-02 — revoke Blob URL pour libérer la mémoire avant de la réinitialiser
-    setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+    // R092 — P2 : revoke via ref (effet de bord pur, pas dans le setter d'état)
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current)
+      pdfUrlRef.current = null
+    }
+    setPdfUrl(null)
     setAttackCount(0)
     setBlockCount(0)
     setSessionId('')
@@ -197,9 +213,14 @@ export function KycPanel({ apiBase }: KycPanelProps) {
                 dispatch('done', d as KycStreamEvent)
                 if (d.pdf_b64) {
                   const blob = new Blob([Uint8Array.from(atob(d.pdf_b64 as string), c => c.charCodeAt(0))], { type: 'application/pdf' })
-                  // F086-02b R090 — revoke the previous Blob URL before creating a new one
-                  // to avoid memory leaks when runKyc() is called multiple times in the same session.
-                  setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob) })
+                  // R092 — P2 : revoke via ref avant de créer la nouvelle Blob URL
+                  // (effet de bord pur — plus dans le setter d'état setState updater)
+                  if (pdfUrlRef.current) {
+                    URL.revokeObjectURL(pdfUrlRef.current)
+                  }
+                  const newUrl = URL.createObjectURL(blob)
+                  pdfUrlRef.current = newUrl
+                  setPdfUrl(newUrl)
                 }
                 setRunning(false)
                 break

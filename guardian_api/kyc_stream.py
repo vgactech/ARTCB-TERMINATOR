@@ -17,7 +17,7 @@ import os
 import textwrap
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Generator
 
 from guardian_mcp.attacker_agent import AttackerAgent, AgentRequest
@@ -265,6 +265,9 @@ def kyc_stream_generator(
             year = parsed_dob.year
             if year < 1900 or year > 2100:
                 dob_fail_reason = f"dob year {year} out of plausible range [1900-2100]"
+            elif parsed_dob.date() >= date.today():
+                # R092 — P1 : reject future birth dates (e.g. 2029-01-01 is not a valid dob)
+                dob_fail_reason = f"dob {dob.strip()} is in the future — birth date must be before today"
             else:
                 dob_ok = True
         except ValueError as exc:

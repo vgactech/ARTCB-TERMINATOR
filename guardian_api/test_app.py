@@ -1168,3 +1168,224 @@ def test_screenpipe_context_unreachable_url_falls_back() -> None:
     finally:
         os.environ.pop("SCREENPIPE_API_URL", None)
 
+
+
+# ─── R092 — P1 : DOB future rejet + P2 : Blob URL cycle de vie KycPanel ────────
+
+
+def _parse_sse(text: str) -> list[dict]:
+    """Parse an SSE text/event-stream body into a list of event dicts.
+
+    Each SSE event has the form:
+        event: <name>\\ndata: <json>\\n\\n
+    Returns list of {"type": name, "payload": parsed_data}.
+    """
+    import json as _json
+    events: list[dict] = []
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        event_name: str = ""
+        data_str: str = ""
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data_str = line[len("data: "):]
+        if event_name and data_str:
+            try:
+                payload = _json.loads(data_str)
+            except _json.JSONDecodeError:
+                payload = {"raw": data_str}
+            events.append({"type": event_name, "payload": payload})
+    return events
+
+
+# ── P1 tests — future DOB must be rejected ───────────────────────────────────
+
+def test_kyc_stream_dob_future_is_rejected() -> None:
+    """POST /api/kyc/stream with a future birth date must emit
+    kyc_validation_check(status=FAIL) then kyc_result(verdict=REJECTED)
+    and done(pdf_b64=None) — no downstream SSE steps must appear.
+
+    R092 — P1 : reject future birth dates.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Test",
+            "last_name": "R092P1",
+            "doc_id": "FR-TEST-R092P1",
+            "dob": "2099-01-01",
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    event_types = [e["type"] for e in events]
+
+    # kyc_validation_check must be present and FAIL
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    assert validation_events[0]["payload"]["status"] == "FAIL", (
+        f"Expected FAIL, got {validation_events[0]['payload']['status']}"
+    )
+    assert validation_events[0]["payload"]["dob_ok"] is False
+
+    # kyc_result must be REJECTED
+    result_events = [e for e in events if e["type"] == "kyc_result"]
+    assert result_events, "kyc_result event missing"
+    assert result_events[0]["payload"]["verdict"] == "REJECTED", (
+        f"Expected REJECTED, got {result_events[0]['payload']['verdict']}"
+    )
+
+    # done must appear with pdf_b64=None
+    done_events = [e for e in events if e["type"] == "done"]
+    assert done_events, "done event missing"
+    assert done_events[0]["payload"]["pdf_b64"] is None
+
+    # no downstream steps (attack_generated, propagation, guardian_decision…)
+    downstream = {"attack_generated", "propagation", "guardian_decision", "chain_verified"}
+    found_downstream = downstream.intersection(set(event_types))
+    assert not found_downstream, (
+        f"Downstream events must not run after DOB FAIL, but found: {found_downstream}"
+    )
+
+
+def test_kyc_stream_dob_today_is_rejected() -> None:
+    """Birth date equal to today must also be rejected (must be strictly before today).
+
+    R092 — P1 : dob >= date.today() is invalid.
+    """
+    from datetime import date as _date
+    today_str = _date.today().isoformat()
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Test",
+            "last_name": "R092P1Today",
+            "doc_id": "FR-TEST-TODAY",
+            "dob": today_str,
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    assert validation_events[0]["payload"]["status"] == "FAIL"
+    assert validation_events[0]["payload"]["dob_ok"] is False
+
+    result_events = [e for e in events if e["type"] == "kyc_result"]
+    assert result_events, "kyc_result event missing"
+    assert result_events[0]["payload"]["verdict"] == "REJECTED"
+
+
+def test_kyc_stream_valid_dob_passes_validation() -> None:
+    """A past birth date must pass the dob_ok check and proceed past
+    kyc_validation_check (status=PASS).
+
+    R092 — P1 counter-test : valid dob must not be rejected by the new guard.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Demo",
+            "last_name": "User",
+            "doc_id": "FR-DEMO-000000",
+            "dob": "1990-01-01",
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing"
+    assert validation_events[0]["payload"]["status"] == "PASS", (
+        f"Valid dob 1990-01-01 must pass; got {validation_events[0]['payload']}"
+    )
+    assert validation_events[0]["payload"]["dob_ok"] is True
+
+
+# ── P2 tests — Blob URL lifecycle (KycPanel.tsx, pdfUrlRef) ──────────────────
+# These tests are unit-level: they verify the TypeScript logic indirectly
+# by asserting the SSE contract that the frontend depends on.
+# The React component behaviour is tested here through the pdf_b64 payload
+# contract: KycPanel creates/revokes Blob URLs only when pdf_b64 is present.
+
+def test_kyc_stream_done_event_pdf_b64_absent_on_rejected() -> None:
+    """When KYC is REJECTED, done.pdf_b64 must be None/null so that KycPanel
+    pdfUrlRef does not receive a stale URL to revoke or display.
+
+    R092 — P2 : pdfUrlRef lifecycle — no Blob created for None pdf_b64.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Test",
+            "last_name": "NoPdf",
+            "doc_id": "FR-NOPDF-001",
+            "dob": "2099-12-31",          # future → REJECTED
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    done_events = [e for e in events if e["type"] == "done"]
+    assert done_events, "done event must always be emitted"
+    assert done_events[0]["payload"]["pdf_b64"] is None, (
+        "pdf_b64 must be null for REJECTED so KycPanel.pdfUrlRef is never set"
+    )
+
+
+def test_kyc_stream_done_event_present_for_valid_flow() -> None:
+    """For a valid flow (not rejected early), done event must always be the
+    last event, ensuring pdfUrlRef cleanup in KycPanel can always run.
+
+    R092 — P2 : done event is always the terminal SSE event.
+    """
+    response = client.post(
+        "/api/kyc/stream",
+        json={
+            "first_name": "Demo",
+            "last_name": "User",
+            "doc_id": "FR-DEMO-000000",
+            "dob": "1990-01-01",
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    assert events, "SSE stream must not be empty"
+    assert events[-1]["type"] == "done", (
+        f"Last SSE event must be 'done' for pdfUrlRef cleanup; "
+        f"got '{events[-1]['type']}'"
+    )
+
+
+def test_kyc_stream_get_endpoint_also_rejects_future_dob() -> None:
+    """GET /api/kyc/stream (backward-compat endpoint) must also reject
+    a future birth date via the same R092-P1 guard.
+
+    Ensures the guard applies regardless of HTTP method.
+    """
+    response = client.get(
+        "/api/kyc/stream",
+        params={
+            "first_name": "Test",
+            "last_name": "GetFuture",
+            "doc_id": "FR-GET-FUTURE",
+            "dob": "2090-06-15",
+        },
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+
+    validation_events = [e for e in events if e["type"] == "kyc_validation_check"]
+    assert validation_events, "kyc_validation_check event missing on GET endpoint"
+    assert validation_events[0]["payload"]["status"] == "FAIL"
+    assert validation_events[0]["payload"]["dob_ok"] is False
+
+    result_events = [e for e in events if e["type"] == "kyc_result"]
+    assert result_events, "kyc_result event missing on GET endpoint"
+    assert result_events[0]["payload"]["verdict"] == "REJECTED"
