@@ -1,6 +1,11 @@
 /**
  * KycPanel — ARTCB TERMINATOR FORENSIC
  * Robuste mobile + desktop, sans AnimatePresence, sans overflow-hidden
+ *
+ * R084 — PII hors URL : EventSource GET → fetch POST SSE manuel.
+ * Les données personnelles (prénom, nom, docId, dob) ne transitent plus
+ * jamais dans l'URL (et donc dans les logs Nginx / access logs).
+ * On utilise fetch() + ReadableStream pour consommer le flux text/event-stream.
  */
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -60,7 +65,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [attackCount, setAttackCount] = useState(0)
   const [blockCount,  setBlockCount]  = useState(0)
   const timelineRef = useRef<HTMLDivElement>(null)
-  const esRef       = useRef<EventSource | null>(null)
+  const esRef       = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (timelineRef.current)
@@ -76,7 +81,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   }
 
   function reset() {
-    esRef.current?.close()
+    esRef.current?.abort()
     setTimeline([])
     setResult(null)
     setPdfUrl(null)
@@ -94,76 +99,121 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     setRunning(true)
     addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `${firstName || '?'} ${lastName || '?'} · ${docId || '?'}`, status: 'info' })
 
-    const url = `${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}`
-    const es = new EventSource(url)
-    esRef.current = es
+    // R084 — PII hors URL : POST body JSON + SSE manuel via fetch().
+    // EventSource n'est pas utilisé : il ne supporte que GET (PII dans l'URL → logs Nginx).
+    // On ouvre un POST vers /api/kyc/stream avec les données dans le body.
+    // Le backend répond avec Content-Type: text/event-stream — on lit le ReadableStream.
+    const ctrl = new AbortController()
+    esRef.current = ctrl
 
-    es.addEventListener('session_opened', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('session_opened', d as KycStreamEvent)
-      addEntry({ type: 'session', label: 'Session Guardian ouverte', detail: `sess: ${d.session_id?.slice(0, 20)}…`, status: 'info' })
-    })
-    es.addEventListener('kyc_identity_check', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('kyc_identity_check', d as KycStreamEvent)
-      addEntry({ type: 'kyc_step', label: `Identité ${d.status === 'PASS' ? 'validée ✓' : 'refusée ✗'}`, detail: d.detail ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
-    })
-    es.addEventListener('attack_generated', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('attack_generated', d as KycStreamEvent)
-      setAttackCount(c => c + 1)
-      addEntry({ type: 'attack', label: `⚠ Attaque LLM → ${d.tool_chosen}`, detail: `args: ${JSON.stringify(d.arguments ?? {}).slice(0, 55)}`, status: 'warn' })
-    })
-    es.addEventListener('propagation', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('propagation', d as KycStreamEvent)
-      addEntry({ type: 'kyc_step', label: 'Propagation → Guardian', detail: `prop: ${d.propagation_id?.slice(0, 20) ?? ''}…`, status: 'info' })
-    })
-    es.addEventListener('guardian_decision', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('guardian_decision', d as KycStreamEvent)
-      const blocked = d.decision === 'BLOCK'
-      if (blocked) setBlockCount(c => c + 1)
-      addEntry({ type: blocked ? 'block' : 'kyc_step', label: `Guardian → ${d.decision}`, detail: d.reason ?? '', status: blocked ? 'ok' : 'warn' })
-    })
-    es.addEventListener('chain_verified', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, string>
-      dispatch('chain_verified', d as KycStreamEvent)
-      addEntry({ type: 'chain', label: `Chaîne R0 → ${d.verdict}`, detail: `${d.events_replayed} événements vérifiés`, status: d.verdict === 'PASS' ? 'ok' : 'fail' })
-    })
-    es.addEventListener('kyc_result', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as KycResult
-      dispatch('kyc_result', d as unknown as KycStreamEvent)
-      setResult(d)
-      addEntry({ type: 'done', label: `KYC ${d.verdict} · Score ${d.score}%`, detail: `${d.attacks_blocked} attaque(s) bloquée(s) · chaîne ${d.chain_intact ? 'intacte' : 'compromise'}`, status: d.verdict === 'APPROVED' ? 'ok' : 'fail' })
-    })
-    es.addEventListener('done', (e: MessageEvent) => {
-      const d = JSON.parse(e.data) as Record<string, unknown>
-      dispatch('done', d as KycStreamEvent)
-      if (d.pdf_b64) {
-        const blob = new Blob([Uint8Array.from(atob(d.pdf_b64 as string), c => c.charCodeAt(0))], { type: 'application/pdf' })
-        setPdfUrl(URL.createObjectURL(blob))
+    ;(async () => {
+      try {
+        const resp = await fetch(`${apiBase}/api/kyc/stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          body: JSON.stringify({ first_name: firstName, last_name: lastName, doc_id: docId, dob }),
+          signal: ctrl.signal,
+        })
+
+        if (!resp.ok || !resp.body) {
+          addEntry({ type: 'error', label: 'Erreur connexion SSE', detail: `HTTP ${resp.status} — vérifier VITE_API_URL`, status: 'fail' })
+          setRunning(false)
+          return
+        }
+
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+
+        // Parseur SSE minimal : accumule les lignes, dispatch sur ligne vide
+        const handleEvent = (eventType: string, rawData: string) => {
+          try {
+            const d = JSON.parse(rawData) as Record<string, unknown>
+            switch (eventType) {
+              case 'session_opened':
+                dispatch('session_opened', d as KycStreamEvent)
+                addEntry({ type: 'session', label: 'Session Guardian ouverte', detail: `sess: ${(d.session_id as string)?.slice(0, 20)}…`, status: 'info' })
+                break
+              case 'kyc_identity_check':
+                dispatch('kyc_identity_check', d as KycStreamEvent)
+                addEntry({ type: 'kyc_step', label: `Identité ${d.status === 'PASS' ? 'validée ✓' : 'refusée ✗'}`, detail: (d.detail as string) ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
+                break
+              case 'attack_generated':
+                dispatch('attack_generated', d as KycStreamEvent)
+                setAttackCount(c => c + 1)
+                addEntry({ type: 'attack', label: `⚠ Attaque LLM → ${d.tool_chosen}`, detail: `args: ${JSON.stringify(d.arguments ?? {}).slice(0, 55)}`, status: 'warn' })
+                break
+              case 'propagation':
+                dispatch('propagation', d as KycStreamEvent)
+                addEntry({ type: 'kyc_step', label: 'Propagation → Guardian', detail: `prop: ${(d.propagation_id as string)?.slice(0, 20) ?? ''}…`, status: 'info' })
+                break
+              case 'guardian_decision': {
+                dispatch('guardian_decision', d as KycStreamEvent)
+                const blocked = d.decision === 'BLOCK'
+                if (blocked) setBlockCount(c => c + 1)
+                addEntry({ type: blocked ? 'block' : 'kyc_step', label: `Guardian → ${d.decision}`, detail: (d.reason as string) ?? '', status: blocked ? 'ok' : 'warn' })
+                break
+              }
+              case 'chain_verified':
+                dispatch('chain_verified', d as KycStreamEvent)
+                addEntry({ type: 'chain', label: `Chaîne R0 → ${d.verdict}`, detail: `${d.events_replayed} événements vérifiés`, status: d.verdict === 'PASS' ? 'ok' : 'fail' })
+                break
+              case 'kyc_result': {
+                const r = d as unknown as KycResult
+                dispatch('kyc_result', d as KycStreamEvent)
+                setResult(r)
+                addEntry({ type: 'done', label: `KYC ${r.verdict} · Score ${r.score}%`, detail: `${r.attacks_blocked} attaque(s) bloquée(s) · chaîne ${r.chain_intact ? 'intacte' : 'compromise'}`, status: r.verdict === 'APPROVED' ? 'ok' : 'fail' })
+                break
+              }
+              case 'done':
+                dispatch('done', d as KycStreamEvent)
+                if (d.pdf_b64) {
+                  const blob = new Blob([Uint8Array.from(atob(d.pdf_b64 as string), c => c.charCodeAt(0))], { type: 'application/pdf' })
+                  setPdfUrl(URL.createObjectURL(blob))
+                }
+                setRunning(false)
+                break
+              default:
+                break
+            }
+          } catch {
+            // JSON parse error — ignorer silencieusement
+          }
+        }
+
+        // Lecture du flux ligne par ligne
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n')
+          buf = lines.pop() ?? ''
+          let curEvent = 'message'
+          let curData = ''
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              curEvent = line.slice(6).trim()
+            } else if (line.startsWith('data:')) {
+              curData = line.slice(5).trim()
+            } else if (line === '' && curData) {
+              handleEvent(curEvent, curData)
+              curEvent = 'message'
+              curData = ''
+            }
+          }
+        }
+        setRunning(false)
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return // reset() appelé — normal
+        addEntry({
+          type: 'error',
+          label: 'Erreur connexion SSE',
+          detail: `API inaccessible (${apiBase || 'URL non configurée'}) — vérifier VITE_API_URL`,
+          status: 'fail',
+        })
+        setRunning(false)
       }
-      es.close()
-      setRunning(false)
-    })
-    es.addEventListener('error', (ev: Event) => {
-      // Discriminer : erreur de connexion initiale vs fin normale du stream
-      const target = ev.target as EventSource
-      const readyState = target?.readyState ?? -1
-      if (readyState === EventSource.CLOSED) {
-        // Stream fermé proprement après 'done' — pas une erreur
-        return
-      }
-      addEntry({
-        type: 'error',
-        label: 'Erreur connexion SSE',
-        detail: `API inaccessible (${apiBase || 'URL non configurée'}) — vérifier VITE_API_URL`,
-        status: 'fail',
-      })
-      es.close()
-      setRunning(false)
-    })
+    })()
   }
 
   const successRate = attackCount > 0 ? Math.round((blockCount / attackCount) * 100) : 100

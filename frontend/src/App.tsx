@@ -151,7 +151,7 @@ function App() {
         <div className="flex items-center gap-1 mb-6 bg-slate-950/50 rounded-xl p-1 border border-white/8 w-fit">
           {([
               { id: 'pitch',     label: '🏦 Pitch Jury',          hidden: false },
-              { id: 'kyc',       label: '🔍 KYC Forensic',        hidden: true  },
+              { id: 'kyc',       label: '🔍 KYC Forensic',        hidden: false },
               { id: 'scenarios', label: '⚡ Scénarios Guardian',  hidden: false },
             ] as const).filter(t => !t.hidden).map(t => (
               <button

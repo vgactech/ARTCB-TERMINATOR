@@ -713,14 +713,17 @@ def screenpipe_context(
 
 # ─── KYC Stream ───────────────────────────────────────────────────────────────
 
-@app.get("/api/kyc/stream")
-def kyc_stream(
-    first_name: str = "Alice",
-    last_name: str = "Dupont",
-    doc_id: str = "FR-2024-000000",
-    dob: str = "1990-01-01",
-) -> StreamingResponse:
-    """Server-Sent Events — full KYC scenario with PDF generation."""
+class KycStreamBody(BaseModel):
+    """POST body for /api/kyc/stream — keeps PII out of the URL and server logs."""
+
+    first_name: str = "Demo"
+    last_name: str = "User"
+    doc_id: str = "FR-DEMO-000000"
+    dob: str = "1990-01-01"
+
+
+def _kyc_stream_response(first_name: str, last_name: str, doc_id: str, dob: str) -> StreamingResponse:
+    """Shared helper — constructs the SSE StreamingResponse for KYC."""
     from guardian_api.kyc_stream import kyc_stream_generator  # noqa: PLC0415
 
     return StreamingResponse(
@@ -736,6 +739,44 @@ def kyc_stream(
             "X-Accel-Buffering": "no",
             "Access-Control-Allow-Origin": "*",
         },
+    )
+
+
+@app.post("/api/kyc/stream")
+@limiter.limit("6/minute")
+def kyc_stream_post(request: Request, body: KycStreamBody) -> StreamingResponse:
+    """POST /api/kyc/stream — R084: PII in JSON body, never in URL or server logs.
+
+    Preferred endpoint since R084. Body fields:
+      first_name, last_name, doc_id, dob (all optional — demo defaults used if absent).
+
+    Returns Server-Sent Events (text/event-stream).
+    """
+    return _kyc_stream_response(
+        first_name=body.first_name,
+        last_name=body.last_name,
+        doc_id=body.doc_id,
+        dob=body.dob,
+    )
+
+
+@app.get("/api/kyc/stream")
+def kyc_stream_get(
+    first_name: str = "Demo",
+    last_name: str = "User",
+    doc_id: str = "FR-DEMO-000000",
+    dob: str = "1990-01-01",
+) -> StreamingResponse:
+    """GET /api/kyc/stream — kept for backward compatibility with start_guardian.sh and curl tests.
+
+    WARNING: query parameters appear in Nginx access logs.
+    Use POST /api/kyc/stream for production / frontend calls (R084).
+    """
+    return _kyc_stream_response(
+        first_name=first_name,
+        last_name=last_name,
+        doc_id=doc_id,
+        dob=dob,
     )
 
 
