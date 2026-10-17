@@ -12,8 +12,11 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any, Generator
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from starlette.responses import StreamingResponse
 
 from guardian_mcp.demo_scenario import DemoReport, run_demo_scenario
@@ -24,11 +27,16 @@ from guardian_mcp.instrumentation import GENESIS_HASH
 from guardian_api.scenario_controller import scenario_controller
 
 
+# Rate limiter — protège les routes d'exécution coûteuses
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
 app = FastAPI(
     title="ARTCB TERMINATOR API",
     description="Guardian Security Console demonstration API",
     version="0.1.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS ouvert pour hackathon — jury peut accéder depuis n'importe quelle origine
 app.add_middleware(
@@ -248,7 +256,9 @@ def run_llm_attack() -> dict[str, Any]:
 
 
 @app.post("/api/llm-attack/stream")
+@limiter.limit("6/minute")
 def stream_llm_attack(
+    request: Request,
     voice: bool = True,
     speed: float = 1.0,
 ) -> StreamingResponse:
@@ -401,6 +411,9 @@ def _sse_generator(
         "arguments": llm_result["arguments"],
         "reasoning": llm_result["llm_reasoning"],
         "request_id": llm_result["request_id"],
+        # R079 P1 — explicit LLM mode label so frontend/jury can distinguish real vs fallback
+        "llm_mode": llm_result.get("backend", "unknown"),
+        # Values: "openai" | "bedrock" | "fallback" | "unknown"
     }
     # Attacker is SILENT — commentator describes its action only
     yield _sse_event("attack_generated", attack_data)
@@ -520,28 +533,55 @@ def demo_phases() -> list[dict[str, str]]:
     return scenario_controller.phase_labels()
 
 
+class KYCStartRequest(dict):
+    """POST body for /api/demo/start — keeps PII out of URL and server logs."""
+    pass
+
+from pydantic import BaseModel  # noqa: E402
+
+class KYCStartBody(BaseModel):
+    scenario_id: str = "kyc-attack"
+    # Synthetic data only — never log real PII
+    first_name: str = "Alice"
+    last_name: str = "Dupont"
+    doc_id: str = "FR-DEMO-000000"
+    dob: str = "1990-01-01"
+
+
 @app.post("/api/demo/start")
+@limiter.limit("10/minute")
 def demo_start(
-    scenario_id: str = Query(default="kyc-attack", description="Demo scenario id"),
-    first_name: str = Query(default="Alice"),
-    last_name: str = Query(default="Dupont"),
-    doc_id: str = Query(default="FR-2024-000000"),
-    dob: str = Query(default="1990-01-01"),
+    request: Request,
+    body: KYCStartBody = None,
+    # Query params kept for backward compat but deprecated — use POST body
+    scenario_id: str = Query(default=None),
+    first_name: str = Query(default=None),
+    last_name: str = Query(default=None),
+    doc_id: str = Query(default=None),
+    dob: str = Query(default=None),
 ) -> dict[str, Any]:
     """Start a demo scenario run. Resets any previous COMPLETED/ERROR run automatically.
 
+    Preferred: send PII in POST body (not URL params) to avoid server log exposure.
     Returns a ScenarioRun dict with:
       - run_id, scenario_id, state (RUNNING), current_phase (DETECTION)
       - kyc_result (SIMULATED fixture — no real PII)
       - certified_100=false, unique_human_proven=false
     """
+    b = body or KYCStartBody()
+    # Query params override body only if explicitly provided
+    resolved_scenario = scenario_id or b.scenario_id
+    resolved_first = first_name or b.first_name
+    resolved_last = last_name or b.last_name
+    resolved_doc = doc_id or b.doc_id
+    resolved_dob = dob or b.dob
     try:
         run = scenario_controller.start(
-            scenario_id=scenario_id,
-            first_name=first_name,
-            last_name=last_name,
-            doc_id=doc_id,
-            dob=dob,
+            scenario_id=resolved_scenario,
+            first_name=resolved_first,
+            last_name=resolved_last,
+            doc_id=resolved_doc,
+            dob=resolved_dob,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

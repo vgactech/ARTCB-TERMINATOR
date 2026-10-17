@@ -16,30 +16,30 @@ test -f "$SSH_KEY" || { echo "ERREUR: $SSH_KEY absent"; exit 1; }
 chmod 600 "$SSH_KEY"
 
 echo "[2/6] Copie index.html → OVH2:/var/www/html/..."
-scp -o StrictHostKeyChecking=no -i "$SSH_KEY" \
+scp -o StrictHostKeyChecking=accept-new -i "$SSH_KEY" \
     "$FRONTEND_SRC" \
     "${OVH2_USER}@${OVH2_IP}:/tmp/index_terminator.html"
 
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "$SSH_KEY" \
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "$SSH_KEY" \
     "${OVH2_USER}@${OVH2_IP}" \
     'sudo mkdir -p /var/www/terminator && sudo cp /tmp/index_terminator.html /var/www/terminator/index.html && sudo chmod 644 /var/www/terminator/index.html && echo "frontend copié"'
 
 echo "[3/6] Copie guardian_api + requirements → OVH2..."
-scp -o StrictHostKeyChecking=no -i "$SSH_KEY" -r \
+scp -o StrictHostKeyChecking=accept-new -i "$SSH_KEY" -r \
     "$GUARDIAN_SRC/guardian_api" \
     "${OVH2_USER}@${OVH2_IP}:${REMOTE_DIR}/"
 
-scp -o StrictHostKeyChecking=no -i "$SSH_KEY" \
+scp -o StrictHostKeyChecking=accept-new -i "$SSH_KEY" \
     "$GUARDIAN_SRC/start_guardian.sh" \
     "${OVH2_USER}@${OVH2_IP}:${REMOTE_DIR}/"
 
 echo "[4/6] Install dépendances Python sur OVH2..."
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "$SSH_KEY" \
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "$SSH_KEY" \
     "${OVH2_USER}@${OVH2_IP}" \
     "cd ${REMOTE_DIR} && python3 -m venv .venv 2>/dev/null || true && .venv/bin/pip install -q -r guardian_api/requirements.txt && echo 'deps OK'"
 
 echo "[5/6] Configurer nginx pour TERMINATOR..."
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "$SSH_KEY" \
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "$SSH_KEY" \
     "${OVH2_USER}@${OVH2_IP}" 'bash -s' <<'NGINX_CONF'
 sudo tee /etc/nginx/conf.d/artcb-terminator.conf > /dev/null <<'EOF'
 # ARTCB-TERMINATOR frontend — OVH2 dédié
@@ -87,7 +87,7 @@ echo "nginx conf écrite"
 NGINX_CONF
 
 echo "[6/6] Reload nginx + vérification..."
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "$SSH_KEY" \
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "$SSH_KEY" \
     "${OVH2_USER}@${OVH2_IP}" \
     'sudo nginx -t 2>&1 && sudo systemctl reload nginx && echo "nginx reloaded"'
 
