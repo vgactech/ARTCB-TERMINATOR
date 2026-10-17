@@ -29,7 +29,7 @@ thiserror = "2"
 # Hex encoding
 hex = "0.4"
 # PyO3 — binding Python (feature optionnelle pour ne pas bloquer cargo test normal)
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 # Tests
