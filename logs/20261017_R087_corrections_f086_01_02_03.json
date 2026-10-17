@@ -1,0 +1,68 @@
+{
+  "report": "R087",
+  "timestamp": "2026-10-17T15:39:35Z",
+  "git_sha_before": "460ddec",
+  "git_sha_current": "460ddec",
+  "findings_applied": [
+    {
+      "id": "F086-01",
+      "type": "feature_gap",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "Case kyc_validation_check manquant dans handleEvent switch",
+      "status": "FIXED",
+      "lines_added": [
+        "case kyc_validation_check: dispatch + addEntry (type kyc_step, status ok/fail)"
+      ]
+    },
+    {
+      "id": "F086-01-backend",
+      "type": "feature_gap",
+      "file": "guardian_api/kyc_stream.py",
+      "description": "Event kyc_validation_check absent du flux SSE backend",
+      "status": "FIXED",
+      "lines_added": [
+        "yield_sse kyc_validation_check apres identity_check (S1b)"
+      ]
+    },
+    {
+      "id": "F086-02",
+      "type": "security",
+      "severity": "MEDIUM",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "Nom fichier PDF contenant PII (firstName + lastName)",
+      "before": "download={}",
+      "after": "download={}",
+      "status": "FIXED",
+      "additional": "Blob URL revoke ajouté dans reset() via URL.revokeObjectURL(prev)"
+    },
+    {
+      "id": "F086-03",
+      "type": "bug",
+      "severity": "HIGH",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "curEvent/curData réinitialisés à chaque chunk — bug chunk-boundary SSE",
+      "before": "let curEvent et curData déclarés DANS le while(true)",
+      "after": "let curEvent et curData déclarés AVANT le while(true)",
+      "status": "FIXED"
+    },
+    {
+      "id": "F086-04",
+      "type": "informational",
+      "file": "frontend/src/**/*.tsx",
+      "description": "Scan innerHTML / dangerouslySetInnerHTML / outerHTML",
+      "occurrences": 0,
+      "status": "PASS"
+    }
+  ],
+  "build_checks": {
+    "typescript_noEmit": "PASS",
+    "errors": 0,
+    "warnings": 0
+  },
+  "html_sink_scan": {
+    "innerHTML": 0,
+    "dangerouslySetInnerHTML": 0,
+    "outerHTML": 0,
+    "verdict": "PASS"
+  }
+}

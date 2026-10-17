@@ -196,9 +196,9 @@ def kyc_stream_generator(
 ) -> Generator[str, None, None]:
     """
     Full KYC SSE pipeline:
-      session_opened → kyc_identity_check → attack_generated →
-      propagation → guardian_decision → chain_verified →
-      kyc_result → done (with pdf_b64)
+      session_opened → kyc_identity_check → kyc_validation_check →
+      attack_generated → propagation → guardian_decision →
+      chain_verified → kyc_result → done (with pdf_b64)
     """
     timestamp = datetime.utcnow().isoformat() + "Z"
     attacks_blocked = 0
@@ -246,6 +246,30 @@ def kyc_stream_generator(
         "dob": dob,
     })
     time.sleep(0.2)
+
+    # ── S1b: Document validation check ────────────────────────────────────
+    # Validates doc_id format and dob plausibility.
+    # Emitted regardless of identity_ok so the frontend always receives it.
+    doc_format_ok = bool(doc_id and len(doc_id) >= 6)
+    dob_plausible = bool(dob and len(dob) == 10 and dob[4] == "-" and dob[7] == "-")
+    validation_status = "PASS" if (doc_format_ok and dob_plausible) else "WARN"
+    validation_checks_failed: list[str] = []
+    if not doc_format_ok:
+        validation_checks_failed.append("doc_id too short or missing (min 6 chars)")
+    if not dob_plausible:
+        validation_checks_failed.append("dob not in expected format YYYY-MM-DD")
+    yield _sse("kyc_validation_check", {
+        "status":        validation_status,
+        "doc_format_ok": doc_format_ok,
+        "dob_plausible": dob_plausible,
+        "checks_failed": validation_checks_failed,
+        "detail": (
+            "Document validation passed"
+            if validation_status == "PASS"
+            else f"Validation warning: {'; '.join(validation_checks_failed)}"
+        ),
+    })
+    time.sleep(0.15)
 
     if not identity_ok:
         yield _sse("kyc_result", {

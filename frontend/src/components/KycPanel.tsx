@@ -6,6 +6,11 @@
  * Les données personnelles (prénom, nom, docId, dob) ne transitent plus
  * jamais dans l'URL (et donc dans les logs Nginx / access logs).
  * On utilise fetch() + ReadableStream pour consommer le flux text/event-stream.
+ *
+ * R087 — F086-01 : ajout du case kyc_validation_check dans handleEvent.
+ * R087 — F086-02 : nom PDF sûr (session_id court, pas PII) + revoke Blob URL.
+ * R087 — F086-03 : curEvent/curData déclarés hors du while(true) pour
+ *                  corriger le bug de chunk-boundary SSE.
  */
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -59,6 +64,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [docId,     setDocId]     = useState('FR-2024-887634')
   const [dob,       setDob]       = useState('1990-05-14')
   const [running,   setRunning]   = useState(false)
+  const [sessionId, setSessionId] = useState<string>('')
   const [timeline,  setTimeline]  = useState<TimelineEntry[]>([])
   const [result,    setResult]    = useState<KycResult | null>(null)
   const [pdfUrl,    setPdfUrl]    = useState<string | null>(null)
@@ -84,9 +90,11 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     esRef.current?.abort()
     setTimeline([])
     setResult(null)
-    setPdfUrl(null)
+    // F086-02 — revoke Blob URL pour libérer la mémoire avant de la réinitialiser
+    setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
     setAttackCount(0)
     setBlockCount(0)
+    setSessionId('')
   }
 
   function runKyc() {
@@ -132,11 +140,18 @@ export function KycPanel({ apiBase }: KycPanelProps) {
             switch (eventType) {
               case 'session_opened':
                 dispatch('session_opened', d as KycStreamEvent)
+                // F086-02 — capturer session_id pour construire le nom de fichier PDF
+                setSessionId((d.session_id as string) ?? '')
                 addEntry({ type: 'session', label: 'Session Guardian ouverte', detail: `sess: ${(d.session_id as string)?.slice(0, 20)}…`, status: 'info' })
                 break
               case 'kyc_identity_check':
                 dispatch('kyc_identity_check', d as KycStreamEvent)
                 addEntry({ type: 'kyc_step', label: `Identité ${d.status === 'PASS' ? 'validée ✓' : 'refusée ✗'}`, detail: (d.detail as string) ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
+                break
+              // F086-01 — event kyc_validation_check (S1b) ajouté
+              case 'kyc_validation_check':
+                dispatch('kyc_validation_check', d as KycStreamEvent)
+                addEntry({ type: 'kyc_step', label: `Validation doc ${d.status === 'PASS' ? '✓' : '✗'}`, detail: (d.detail as string) ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
                 break
               case 'attack_generated':
                 dispatch('attack_generated', d as KycStreamEvent)
@@ -182,14 +197,16 @@ export function KycPanel({ apiBase }: KycPanelProps) {
         }
 
         // Lecture du flux ligne par ligne
+        // F086-03 — curEvent/curData déclarés HORS du while pour survivre
+        //           aux coupures de chunk réseau (bug chunk-boundary SSE)
+        let curEvent = 'message'
+        let curData = ''
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
           buf += decoder.decode(value, { stream: true })
           const lines = buf.split('\n')
           buf = lines.pop() ?? ''
-          let curEvent = 'message'
-          let curData = ''
           for (const line of lines) {
             if (line.startsWith('event:')) {
               curEvent = line.slice(6).trim()
@@ -308,7 +325,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
             {pdfUrl && (
               <a
                 href={pdfUrl}
-                download={`kyc-${firstName}-${lastName}.pdf`}
+                download={`artcb-kyc-report-${sessionId ? sessionId.slice(0, 12) : 'session'}.pdf`}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '12px 14px',
                   background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
