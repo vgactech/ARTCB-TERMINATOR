@@ -58,21 +58,29 @@ fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Guardian API  →  http://localhost:${PORT}/api/health"
-echo "  KYC stream    →  http://localhost:${PORT}/api/kyc/stream"
+echo "  Demo start    →  http://localhost:${PORT}/api/demo/start  [POST]"
 echo "  Scénarios     →  http://localhost:${PORT}/api/scenarios"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ── Test KYC rapide ──────────────────────────────────────────────────────────
-echo "🔬 Test KYC rapide (Alice Martin)..."
-RESULT=$(curl -s --max-time 12 \
-  "http://localhost:${PORT}/api/kyc/stream?first_name=Alice&last_name=Martin&doc_id=TEST-001&dob=1990-01-01" \
-  2>/dev/null | grep "^data:" | tail -2)
-if echo "$RESULT" | grep -q '"verdict"'; then
-  VERDICT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.readline().replace('data: ','')); print(d.get('verdict','?'))" 2>/dev/null || echo "?")
-  echo "   Verdict: ${VERDICT} ✅"
+# ── Test démo rapide via POST body (PII hors URL — R083 fix) ─────────────────
+# AVANT (R082 P0) : GET /api/kyc/stream?first_name=Alice&last_name=Martin&doc_id=TEST-001&dob=1990-01-01
+# APRÈS  (R083)   : POST /api/demo/start avec données synthétiques dans le body JSON
+# Raison : les query strings apparaissent dans les logs Nginx/proxy ; le body JSON ne l'est pas.
+echo "🔬 Test démo rapide (données synthétiques — body JSON)..."
+DEMO_RESPONSE=$(curl -s --max-time 12 \
+  -X POST "http://localhost:${PORT}/api/demo/start" \
+  -H "Content-Type: application/json" \
+  -d '{"scenario_id":"kyc-attack","first_name":"Demo","last_name":"User","doc_id":"FR-DEMO-000000","dob":"1990-01-01"}' \
+  2>/dev/null)
+if echo "$DEMO_RESPONSE" | grep -q '"session_id"\|"scenario_id"\|"status"'; then
+  echo "   Session démarrée ✅ — connecter le frontend SSE pour les événements."
+elif echo "$DEMO_RESPONSE" | grep -q '"detail"'; then
+  # L'endpoint peut retourner une erreur si scenario_id est inconnu : afficher sans paniquer
+  DETAIL=$(echo "$DEMO_RESPONSE" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('detail','?'))" 2>/dev/null || echo "?")
+  echo "   ⚠  Réponse API : ${DETAIL}"
 else
-  echo "   ⚠  Pas de réponse KYC — vérifier les logs"
+  echo "   ⚠  Pas de réponse demo/start — vérifier les logs : ${LOG_FILE}"
 fi
 
 # ── Ouvrir le frontend ───────────────────────────────────────────────────────
