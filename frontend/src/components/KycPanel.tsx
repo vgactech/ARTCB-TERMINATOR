@@ -29,6 +29,8 @@ import {
   Clock, Download, User,
 } from 'lucide-react'
 import type { KycResult, KycStreamEvent } from '../api/guardian'
+import { CameraHoloOverlay } from './CameraHoloOverlay'
+import type { CameraState } from './CameraHoloOverlay'
 
 type KycPanelProps = { apiBase: string }
 
@@ -74,6 +76,7 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [docId,     setDocId]     = useState('FR-2024-887634')
   const [dob,       setDob]       = useState('1990-05-14')
   const [running,   setRunning]   = useState(false)
+  const [camState,  setCamState]  = useState<CameraState>('idle')
   const [sessionId, setSessionId] = useState<string>('')
   const [timeline,  setTimeline]  = useState<TimelineEntry[]>([])
   const [result,    setResult]    = useState<KycResult | null>(null)
@@ -285,6 +288,20 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ background: '#0b1321', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }}>
+
+      {/* ── Section caméra holographique ─────────────────────────────────── */}
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <p style={{ margin: '0 0 10px', fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+          Scan biométrique holographique
+          {camState === 'active' && (
+            <span style={{ marginLeft: 8, color: '#22d3ee', fontSize: 9 }}>● LIVE</span>
+          )}
+        </p>
+        <CameraHoloOverlay
+          onStateChange={setCamState}
+          kycRunning={running}
+        />
+      </div>
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
