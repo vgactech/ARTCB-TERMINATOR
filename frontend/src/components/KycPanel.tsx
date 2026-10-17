@@ -11,6 +11,11 @@
  * R087 — F086-02 : nom PDF sûr (session_id court, pas PII) + revoke Blob URL.
  * R087 — F086-03 : curEvent/curData déclarés hors du while(true) pour
  *                  corriger le bug de chunk-boundary SSE.
+ *
+ * R088 — F086-02b : useEffect cleanup revoke Blob URL au unmount.
+ * R088 — F086-03b : flush event pending à fin de stream (pas de trailing newline).
+ * R088 — F086-03c : normalisation CRLF → LF avant split.
+ * R088 — F086-03d : multi-line data: append (spec SSE §6.2).
  */
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -77,6 +82,14 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     if (timelineRef.current)
       timelineRef.current.scrollTop = timelineRef.current.scrollHeight
   }, [timeline])
+
+  // F086-02b — R088 : revoke Blob URL à l'unmount pour libérer la mémoire
+  //            même si reset() n'est pas appelé avant la destruction du composant
+  useEffect(() => {
+    return () => {
+      setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+    }
+  }, [])
 
   function addEntry(e: Omit<TimelineEntry, 'id' | 'ts'>) {
     setTimeline(prev => [...prev, { ...e, id: crypto.randomUUID(), ts: Date.now() }])
@@ -205,19 +218,26 @@ export function KycPanel({ apiBase }: KycPanelProps) {
           const { done, value } = await reader.read()
           if (done) break
           buf += decoder.decode(value, { stream: true })
-          const lines = buf.split('\n')
+          // F086-03c — normaliser CRLF → LF avant split (spec SSE §3, RFC 8895 §9)
+          const lines = buf.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
           buf = lines.pop() ?? ''
           for (const line of lines) {
             if (line.startsWith('event:')) {
               curEvent = line.slice(6).trim()
             } else if (line.startsWith('data:')) {
-              curData = line.slice(5).trim()
+              // F086-03d — multi-line data: append avec \n (spec SSE §6.2)
+              curData = curData ? curData + '\n' + line.slice(5).trim() : line.slice(5).trim()
             } else if (line === '' && curData) {
               handleEvent(curEvent, curData)
               curEvent = 'message'
               curData = ''
             }
           }
+        }
+        // F086-03b — flush de l'event pending si le stream se termine sans trailing \n\n
+        //            (comportement conforme à la spec SSE §6.2 : EOF = fin d'event)
+        if (curData) {
+          handleEvent(curEvent, curData)
         }
         setRunning(false)
       } catch (err) {

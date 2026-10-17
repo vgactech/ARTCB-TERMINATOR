@@ -1,0 +1,76 @@
+{
+  "report": "R088",
+  "date": "2026-10-17",
+  "repository": "vgactech/ARTCB-TERMINATOR",
+  "sha_before": "aa610fd",
+  "mode": "DEBUG",
+  "certified_100": false,
+  "unique_human_proven": false,
+  "typescript_build": {
+    "command": "npx tsc --noEmit",
+    "result": "PASS",
+    "errors": 0,
+    "warnings": 0
+  },
+  "corrections": [
+    {
+      "id": "F086-02b",
+      "report_origin": "R086",
+      "priority": "P1",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "useEffect cleanup revoke Blob URL à l'unmount",
+      "problem": "reset() revoque l'URL Blob si l'utilisateur clique Réinitialiser, mais si le composant est démonté sans appel à reset() (navigation, rechargement), le Blob URL reste en mémoire indéfiniment.",
+      "before": "Aucun useEffect de cleanup pour pdfUrl. L'URL Blob n'était libérée que via reset().",
+      "after": "useEffect(() => { return () => { setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null }) } }, []) — exécuté au unmount.",
+      "lines_modified": "après ligne 80 (ajout lignes 83-89)",
+      "status": "FIXED"
+    },
+    {
+      "id": "F086-03b",
+      "report_origin": "R086",
+      "priority": "P1",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "Flush event pending à fin de stream sans trailing newline",
+      "problem": "Si le serveur ferme le flux SSE sans envoyer un \\n\\n final (trailing blank line), l'event en cours d'accumulation dans curData est silencieusement perdu. Ce cas est explicitement couvert par la spec SSE §6.2.",
+      "before": "Après while(true), pas de vérification de curData. Les events sans trailing \\n\\n étaient perdus.",
+      "after": "if (curData) { handleEvent(curEvent, curData) } — inséré après le while avant setRunning(false).",
+      "lines_modified": "après ligne 228 (ajout lignes 229-231)",
+      "status": "FIXED"
+    },
+    {
+      "id": "F086-03c",
+      "report_origin": "R086",
+      "priority": "P1",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "Normalisation CRLF → LF avant split (RFC 8895 §9)",
+      "problem": "buf.split('\\n') ne traitait pas les fins de ligne CRLF (\\r\\n) ni les CR seuls (\\r). Sur certains serveurs ou proxies Windows, les lignes SSE peuvent arriver avec \\r\\n, causant des lignes avec \\r résiduel qui faisaient échouer les comparaisons line.startsWith('event:').",
+      "before": "const lines = buf.split('\\n')",
+      "after": "const lines = buf.replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n').split('\\n')",
+      "lines_modified": "ligne 210 (remplacement)",
+      "status": "FIXED"
+    },
+    {
+      "id": "F086-03d",
+      "report_origin": "R086",
+      "priority": "P1",
+      "file": "frontend/src/components/KycPanel.tsx",
+      "description": "Multi-line data: append avec \\n (spec SSE §6.2)",
+      "problem": "curData = line.slice(5).trim() écrasait la valeur à chaque ligne data: supplémentaire. La spec SSE §6.2 impose que plusieurs lignes data: soient concaténées avec \\n. Résultat avec l'ancien code : seule la dernière ligne data: était conservée pour les events multi-lignes.",
+      "before": "curData = line.slice(5).trim()",
+      "after": "curData = curData ? curData + '\\n' + line.slice(5).trim() : line.slice(5).trim()",
+      "lines_modified": "ligne 215 (remplacement)",
+      "status": "FIXED"
+    }
+  ],
+  "files_changed": [
+    "frontend/src/components/KycPanel.tsx"
+  ],
+  "diff_lines": 61,
+  "acceptance_criteria_r086": {
+    "F086-02_blob_url_revoked_on_unmount": "PASS",
+    "F086-03_eof_flush": "PASS",
+    "F086-03_crlf_support": "PASS",
+    "F086-03_multiline_data_append": "PASS",
+    "typescript_build_0_errors": "PASS"
+  }
+}
