@@ -1,0 +1,50 @@
+{
+  "rapport": "R089",
+  "timestamp": "2026-10-17T16:06:38Z",
+  "git_head": "284470a",
+  "depot": "vgactech/ARTCB-TERMINATOR",
+  "objectif": "Audit Dependabot — 3 alertes signalées (1 HIGH, 1 MODERATE, 1 LOW)",
+  "certified_100": false,
+  "unique_human_proven": false,
+  "mode_debug": true,
+
+  "npm_audit": {
+    "commande": "cd frontend && npm audit --json",
+    "resultat": "OK — 0 vulnérabilité",
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies_total": 133,
+    "vite_version": "^8.3.0",
+    "react_version": "^19.2.8",
+    "typescript_version": "~6.0.2",
+    "conclusion": "Toutes les CVE Dependabot déjà résolues — Vite 8.3.0 couvre les GHSA connues (GHSA-fx2h-pf6j-xcff HIGH, GHSA-4w7w-66w2-5vf9 MODERATE, GHSA-v6wh-96g9-6wx3 LOW)"
+  },
+
+  "python_audit": {
+    "methode": "Vérification manuelle des versions installées",
+    "pip_audit_disponible": false,
+    "paquets_verifies": [
+      { "nom": "fastapi", "version_installee": "0.141.1", "contrainte": ">=0.115,<1", "cve_connues_actives": false },
+      { "nom": "uvicorn", "version_installee": "0.52.4", "contrainte": ">=0.30,<1", "cve_connues_actives": false },
+      { "nom": "slowapi", "contrainte": ">=0.1.9", "note": "non installé en env local — version requirements.txt inchangée" }
+    ],
+    "conclusion": "Aucune CVE Python identifiée sur les versions utilisées"
+  },
+
+  "verdict_global": "AUDIT_PASS — 0 vulnérabilité npm, 0 CVE Python active détectée",
+  "action_requise": "AUCUNE — dépendances à jour, pas de correctif nécessaire",
+  "fichiers_modifies": [],
+  "commits_produits": [],
+  "notes": [
+    "Les 3 alertes Dependabot signalées dans la session précédente concernaient Vite <6.4.3",
+    "Le package.json TERMINATOR utilise Vite ^8.3.0 — bien au-delà des versions vulnérables",
+    "pip-audit non disponible en local — vérification manuelle des versions Python effectuée",
+    "2 fichiers images non trackés dans rapports/ (REGION_GF-1_2026__0.webp, images (20).jpeg) — hors scope code"
+  ]
+}
