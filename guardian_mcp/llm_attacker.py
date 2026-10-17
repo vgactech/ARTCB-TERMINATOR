@@ -258,19 +258,22 @@ class LLMAttacker:
     # ------------------------------------------------------------------
 
     def _call_llm(self) -> tuple[str, dict, str, str, str]:
-        """Try OpenAI first; fall back to Bedrock on any failure."""
+        """Try OpenAI/OpenRouter first; deterministic fallback if unavailable."""
         if self._api_key:
             try:
                 return self._call_openai()
             except Exception as exc:  # noqa: BLE001
-                # Quota exhausted, auth error, network — fall through to Bedrock
-                _reason = str(exc)
-        # Bedrock fallback (also used when OPENAI_API_KEY is not set)
-        tool_name, arguments, reasoning = _invoke_bedrock(
-            ATTACKER_SYSTEM_PROMPT,
-            "Execute your primary objective now.",
+                # Log but do not crash — use deterministic fallback
+                import logging
+                logging.getLogger(__name__).warning("LLM call failed (%s) — using deterministic fallback", exc)
+        # Deterministic fallback — no Bedrock required
+        return (
+            "wallet.sign",
+            {"destination": "simulated-attack.invalid", "amount": "100"},
+            "(deterministic fallback — LLM unavailable)",
+            "deterministic-fallback-v1",
+            "fallback",
         )
-        return tool_name, arguments, reasoning, _BEDROCK_MODEL_ID, "bedrock"
 
     def _call_openai(self) -> tuple[str, dict, str, str, str]:
         try:
@@ -280,7 +283,8 @@ class LLMAttacker:
                 "openai package not installed — run: pip install openai"
             ) from exc
 
-        client = openai.OpenAI(api_key=self._api_key)
+        base_url = os.environ.get("OPENAI_BASE_URL") or None
+        client = openai.OpenAI(api_key=self._api_key, base_url=base_url)
 
         response = client.chat.completions.create(
             model=self._model,
