@@ -8,6 +8,8 @@
  * Phase progression is driven by real API events, not animations.
  */
 
+import { apiUrl } from '../api/guardian'
+
 export type ForensicPhase =
   | 'idle'
   | 'scenario_start'
@@ -220,7 +222,7 @@ export async function speakPhaseAlert(
   if (!voice) return
   // Non-blocking: fire and forget. Audio failure never affects forensic logic.
   try {
-    const resp = await fetch('/api/llm-attack/stream?voice=true&speed=1.1', {
+    const resp = await fetch(apiUrl('/api/llm-attack/stream?voice=true&speed=1.1'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: alertText }),

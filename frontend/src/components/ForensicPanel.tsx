@@ -14,6 +14,7 @@ import { ShieldAlert, Lock, CheckCircle, Zap } from 'lucide-react'
 import { PHASE_CONFIGS } from '../forensic/phases'
 import type { ForensicPhase } from '../forensic/phases'
 import type { PolicyScenarioResult } from '../api/guardian'
+import { apiUrl } from '../api/guardian'
 
 interface ForensicPanelProps {
   phase: ForensicPhase
@@ -82,7 +83,7 @@ export function ForensicPanel({ phase, result, running }: ForensicPanelProps) {
 
   // Fetch ARTCB MCP bridge status once on mount
   useEffect(() => {
-    fetch('/api/artcb/status')
+    fetch(apiUrl('/api/artcb/status'))
       .then((r) => r.ok ? r.json() : Promise.reject(r.status))
       .then((data: ArtcbStatus) => setArtcbStatus(data))
       .catch(() => setArtcbStatus({ available: false, error: 'unreachable' }))

@@ -24,6 +24,12 @@ from guardian_mcp.attacker_agent import AttackerAgent, AgentRequest
 from guardian_mcp.agents import OrchestratorAgent, PropagatorAgent
 from guardian_mcp.defender_agent import DefenderAgent
 from guardian_mcp.instrumentation import GENESIS_HASH
+from guardian_mcp.voice_commentary import (
+    VoiceCommentary,
+    VoiceEvent,
+    build_commentary_script,
+)
+from guardian_api.liveness import liveness_controller
 
 
 # ── PDF generation (fpdf2 if available, fallback to minimal PDF) ──────────────
@@ -41,8 +47,11 @@ def _build_pdf(
     run_id: str,
     events: list[dict],
     timestamp: str,
+    narration: list[str] | None = None,
+    liveness_status: str = "SKIPPED",
+    human_proven: bool = False,
 ) -> bytes:
-    """Generate KYC report as PDF bytes. Uses fpdf2 if installed, else minimal RFC-compatible PDF."""
+    """Generate KYC report as PDF bytes. Uses fpdf2 if installed, else dependency-free PDF."""
     try:
         from fpdf import FPDF  # noqa: PLC0415
 
@@ -109,6 +118,27 @@ def _build_pdf(
             pdf.set_text_color(51, 65, 85)
         pdf.ln(3)
 
+        # Liveness / human presence
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_text_color(30, 41, 59)
+        pdf.cell(0, 8, "Preuve de présence humaine (liveness)", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(51, 65, 85)
+        liveness_label = {
+            "PASS": "PASS - geste main validé (défi nonce)",
+            "SIMULATED": "SIMULE - mode démo sans caméra",
+            "SKIPPED": "NON ENGAGE",
+        }.get(liveness_status, liveness_status)
+        for label, value in [
+            ("Défi liveness", liveness_label),
+            ("Présence humaine prouvée", "OUI" if human_proven else "NON"),
+        ]:
+            pdf.cell(65, 7, f"{label} :", ln=False)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 7, value, ln=True)
+            pdf.set_font("Helvetica", "", 10)
+        pdf.ln(3)
+
         # Event log
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_text_color(30, 41, 59)
@@ -124,6 +154,17 @@ def _build_pdf(
         pdf.set_text_color(71, 85, 105)
         pdf.ln(3)
 
+        # Narration transcript
+        if narration:
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(30, 41, 59)
+            pdf.cell(0, 8, "Narration Guardian", ln=True)
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(71, 85, 105)
+            for caption in narration:
+                pdf.multi_cell(0, 5, caption)
+            pdf.ln(3)
+
         # Footer
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(148, 163, 184)
@@ -132,44 +173,148 @@ def _build_pdf(
         return pdf.output()
 
     except ImportError:
-        # Minimal valid PDF fallback
-        return _minimal_pdf(first_name, last_name, doc_id, verdict, score, attacks_blocked, session_id, timestamp)
+        # Dependency-free PDF fallback — always valid, always populated.
+        return _minimal_pdf(
+            first_name=first_name, last_name=last_name,
+            doc_id=doc_id, dob=dob,
+            verdict=verdict, score=score,
+            attacks_blocked=attacks_blocked, chain_intact=chain_intact,
+            session_id=session_id, run_id=run_id,
+            events=events, timestamp=timestamp,
+            narration=narration or [],
+            liveness_status=liveness_status, human_proven=human_proven,
+        )
+
+
+def _escape_pdf_text(text: str) -> str:
+    """Escape the three characters that are special inside a PDF string literal."""
+    return text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+
+def _pdf_document(
+    lines: list[str],
+    *,
+    font: str = "Courier",
+    font_size: int = 8,
+    leading: int = 10,
+) -> bytes:
+    """Assemble a valid single-page PDF from plain text lines, with no dependencies.
+
+    Unlike the previous hard-coded fallback, this computes exact object byte
+    offsets, writes a complete xref table, and sets /Length to the real content
+    stream length — so every PDF viewer renders the report instead of a blank page.
+    """
+    top = 760
+    max_lines = max(1, (top - 40) // leading)
+    if len(lines) > max_lines:
+        lines = lines[: max_lines - 1] + ["... (contenu tronque)"]
+
+    content_lines = ["BT", f"/F1 {font_size} Tf", f"50 {top} Td", f"{leading} TL"]
+    for line in lines:
+        content_lines.append(f"({_escape_pdf_text(line)}) Tj")
+        content_lines.append("T*")
+    content_lines.append("ET")
+    content = ("\n".join(content_lines) + "\n").encode("latin-1", errors="replace")
+
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"endstream",
+        f"<< /Type /Font /Subtype /Type1 /BaseFont /{font} >>".encode(),
+    ]
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for index, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += str(index).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+
+    xref_offset = len(out)
+    size = len(objects) + 1
+    out += b"xref\n0 " + str(size).encode() + b"\n"
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        b"trailer\n<< /Size " + str(size).encode() + b" /Root 1 0 R >>\n"
+        b"startxref\n" + str(xref_offset).encode() + b"\n%%EOF\n"
+    )
+    return bytes(out)
 
 
 def _minimal_pdf(
-    first_name: str, last_name: str, doc_id: str,
-    verdict: str, score: int, attacks_blocked: int,
-    session_id: str, timestamp: str,
+    first_name: str, last_name: str, doc_id: str, dob: str,
+    verdict: str, score: int, attacks_blocked: int, chain_intact: bool,
+    session_id: str, run_id: str, events: list[dict], timestamp: str,
+    narration: list[str],
+    liveness_status: str = "SKIPPED", human_proven: bool = False,
 ) -> bytes:
-    """Minimal valid PDF without external deps."""
-    content = textwrap.dedent(f"""\
-        ARTCB TERMINATOR FORENSIC - RAPPORT KYC
-        ========================================
-        Identité   : {first_name} {last_name}
-        Document   : {doc_id}
-        Verdict    : {verdict}
-        Score      : {score}%
-        Attaques   : {attacks_blocked} bloquées
-        Session    : {session_id[:32]}...
-        Timestamp  : {timestamp}
-        Guardian   : R0 Chain Verified
-    """)
-    stream = content.encode("latin-1", errors="replace")
-    pdf = (
-        b"%PDF-1.4\n"
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
-        b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
-        + (
-            b"4 0 obj\n<< /Length " + str(len(stream) + 40).encode() + b" >>\nstream\n"
-            b"BT /F1 10 Tf 50 750 Td\n"
-        ) + stream + b"\nET\nendstream\nendobj\n"
-        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n"
-        b"xref\n0 6\n0000000000 65535 f\n"
-        b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n9\n%%EOF\n"
+    """Dependency-free KYC report. Always renders identity, metrics, journal,
+    and narration — even when a field or the event list is empty (demo data)."""
+    def shown(value: object) -> str:
+        text = "" if value is None else str(value)
+        return text if text.strip() else "N/A"
+
+    liveness_label = {
+        "PASS": "PASS - geste main valide (defi nonce)",
+        "SIMULATED": "SIMULE - mode demo sans camera",
+        "SKIPPED": "NON ENGAGE",
+    }.get(liveness_status, liveness_status)
+    human_label = "OUI" if human_proven else "NON"
+
+    lines: list[str] = [
+        "ARTCB TERMINATOR FORENSIC - RAPPORT KYC",
+        "=" * 78,
+        f"VERDICT : {shown(verdict)}    |    SCORE : {score}%",
+        "",
+        "IDENTITE VERIFIEE",
+        f"  Prenom            : {shown(first_name)}",
+        f"  Nom               : {shown(last_name)}",
+        f"  N. document       : {shown(doc_id)}",
+        f"  Date de naissance : {shown(dob)}",
+        f"  Horodatage        : {shown(timestamp)}",
+        "",
+        "METRIQUES DE SECURITE GUARDIAN",
+        f"  Attaques bloquees : {attacks_blocked}",
+        f"  Chaine R0         : {'INTACTE' if chain_intact else 'COMPROMISE'}",
+        f"  Evenements traces : {len(events)}",
+        f"  Session ID        : {shown(session_id)}",
+        f"  Run ID            : {shown(run_id)}",
+        "",
+        "PREUVE DE PRESENCE HUMAINE (LIVENESS)",
+        f"  Defi liveness     : {shown(liveness_label)}",
+        f"  Presence humaine  : {human_label}",
+        "",
+        "JOURNAL FORENSIC",
+    ]
+    if events:
+        for index, event in enumerate(events[:20], start=1):
+            phase = str(event.get("event_phase", "?"))
+            decision = str(event.get("decision", "?"))
+            tool = str(event.get("tool_name", "?"))
+            event_hash = str(event.get("event_hash", ""))
+            lines.append(
+                f"  {index:>2}. [{phase:8}] {decision:8} | {tool:22} | hash:{event_hash[:16]}"
+            )
+    else:
+        lines.append("  DEMO - aucun evenement capture pour cette session.")
+
+    lines.append("")
+    lines.append("NARRATION GUARDIAN")
+    if narration:
+        for caption in narration:
+            for wrapped in textwrap.wrap(caption, width=92) or [""]:
+                lines.append(f"  {wrapped}")
+    else:
+        lines.append("  DEMO - narration non disponible.")
+
+    lines.append("")
+    lines.append(
+        f"Genere le {shown(timestamp)} | ARTCB TERMINATOR FORENSIC | Guardian R0 Chain Verified"
     )
-    return pdf
+    return _pdf_document(lines)
 
 
 # ── KYC SSE Generator ─────────────────────────────────────────────────────────
@@ -188,18 +333,69 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+def _track(narration: list[str], script: str) -> str:
+    """Record a narration script (for the PDF transcript) and return it."""
+    narration.append(script)
+    return script
+
+
+def _emit_voice(
+    vc: VoiceCommentary,
+    role: str,
+    text: str,
+    sequence: int,
+) -> Generator[str, None, None]:
+    """Yield voice_script (caption), then voice_audio when TTS is available.
+
+    Isolation invariant: the caller MUST emit the matching security event
+    before calling this. TTS latency never delays a Guardian decision.
+    """
+    yield _sse("voice_script", {"role": role, "text": text, "sequence": sequence})
+    if vc.is_enabled() and text:
+        audio = (
+            vc.speak_commentator(text)
+            if role == "commentator"
+            else vc.speak_agent(role, text)
+        )
+        if audio:
+            yield _sse("voice_audio", {
+                "role": role,
+                "sequence": sequence,
+                "audio_b64": base64.b64encode(audio).decode(),
+                "mime": "audio/mpeg",
+                "speed": vc.speed,
+            })
+
+
 def kyc_stream_generator(
     first_name: str,
     last_name: str,
     doc_id: str,
     dob: str,
+    *,
+    voice: bool = True,
+    voice_speed: float = 1.0,
+    liveness_token: str | None = None,
 ) -> Generator[str, None, None]:
     """
     Full KYC SSE pipeline:
-      session_opened → kyc_identity_check → attack_generated →
+      session_opened → kyc_identity_check → liveness_check → attack_generated →
       propagation → guardian_decision → chain_verified →
       kyc_result → done (with pdf_b64)
+
+    Voice narration (voice=True) is emitted at five key moments — session start,
+    liveness check, attack detected, Guardian BLOCK, and final verdict — always
+    AFTER the matching security event. voice_script carries the caption text;
+    voice_audio (base64 mp3) is emitted only when VOICE_1_ELEVENLABS_API is set.
+    The pipeline degrades to captions-only when TTS is unavailable and never
+    blocks on it.
+
+    Liveness: when liveness_token references a verified challenge, human_proven
+    is true (PASS) and the verdict requires it. SIMULATED/SKIPPED never block.
+    A FAILed liveness check forces REJECTED.
     """
+    vc = VoiceCommentary(voice=voice, voice_speed=voice_speed)
+    narration: list[str] = []
     timestamp = datetime.utcnow().isoformat() + "Z"
     attacks_blocked = 0
 
@@ -235,6 +431,14 @@ def kyc_stream_generator(
             {"id": context.defender_id,      "role": "defender"},
         ],
     })
+    yield from _emit_voice(
+        vc,
+        "commentator",
+        _track(narration, build_commentary_script(
+            VoiceEvent("session_opened", {"session_id": context.session_id}, 0)
+        )),
+        0,
+    )
     time.sleep(0.15)
 
     # ── S1: Identity check ─────────────────────────────────────────────────
@@ -258,6 +462,39 @@ def kyc_stream_generator(
         yield _sse("done", {"pdf_b64": None})
         return
 
+    # ── S1b: Liveness / human-presence challenge ──────────────────────────
+    liveness_status = "SKIPPED"
+    human_proven = False
+    liveness_result = (
+        liveness_controller.result_for(liveness_token) if liveness_token else None
+    )
+    if liveness_result is not None:
+        liveness_status = liveness_result.liveness
+        human_proven = liveness_result.human_proven
+    liveness_ok = liveness_status in ("PASS", "SIMULATED", "SKIPPED")
+
+    yield _sse("liveness_check", {
+        "status":        liveness_status,
+        "human_proven":  human_proven,
+        "gesture":       liveness_result.gesture if liveness_result else None,
+        "reason":        liveness_result.reason if liveness_result else "Liveness non engagée",
+        "evidence_id":   liveness_result.evidence_id if liveness_result else None,
+        "guardian_event_id": liveness_result.guardian_event_id if liveness_result else None,
+        "data_source":   liveness_result.data_source if liveness_result else None,
+    })
+    yield from _emit_voice(
+        vc,
+        "commentator",
+        _track(narration, build_commentary_script(
+            VoiceEvent("liveness_check", {
+                "status":  liveness_status,
+                "gesture": liveness_result.gesture if liveness_result else "",
+            }, 1)
+        )),
+        1,
+    )
+    time.sleep(0.15)
+
     # ── S2: LLM attacker simulates fraud on wallet.sign ───────────────────
     # Use static attacker (no LLM needed — deterministic for demo reliability)
     request = source.craft_agent_request(
@@ -272,6 +509,17 @@ def kyc_stream_generator(
         "reasoning": f"Tentative de fraude KYC — usurpation d'identité {first_name} {last_name}",
         "request_id": request.request_id,
     })
+    yield from _emit_voice(
+        vc,
+        "commentator",
+        _track(narration, build_commentary_script(
+            VoiceEvent("attack_generated", {
+                "tool_chosen": request.tool_name,
+                "reasoning": f"Tentative de fraude KYC — usurpation d'identité {first_name} {last_name}",
+            }, 2)
+        )),
+        2,
+    )
     time.sleep(0.2)
 
     # ── S3: Propagation ────────────────────────────────────────────────────
@@ -298,6 +546,18 @@ def kyc_stream_generator(
         "guardian_event_id": policy_result.guardian_event_id,
         "tool_name":         request.tool_name,
     })
+    yield from _emit_voice(
+        vc,
+        "commentator",
+        _track(narration, build_commentary_script(
+            VoiceEvent("guardian_decision", {
+                "decision": policy_result.decision.value,
+                "tool_name": request.tool_name,
+                "evidence_id": policy_result.evidence_id or "",
+            }, 3)
+        )),
+        3,
+    )
     time.sleep(0.15)
 
     # ── S5: R0 chain verification ──────────────────────────────────────────
@@ -326,22 +586,52 @@ def kyc_stream_generator(
     time.sleep(0.15)
 
     # ── S6: KYC verdict ────────────────────────────────────────────────────
-    score = 95 if (identity_ok and blocked and chain_valid) else (70 if identity_ok else 0)
-    verdict = "APPROVED" if score >= 80 else ("PENDING" if score >= 50 else "REJECTED")
+    # Enforced rule: APPROVED ⟺ identity_ok ∧ blocked ∧ chain_valid ∧ liveness_ok.
+    # A FAILed liveness challenge forces REJECTED; SIMULATED/SKIPPED never block.
+    if not liveness_ok:
+        score = 0
+        verdict = "REJECTED"
+        verdict_reason = "Présence humaine non prouvée"
+    elif identity_ok and blocked and chain_valid:
+        score = 95
+        verdict = "APPROVED"
+        verdict_reason = "Guardian a bloqué la fraude — chaîne R0 intacte"
+    elif identity_ok:
+        score = 70
+        verdict = "PENDING"
+        verdict_reason = "Identité valide — vérification partielle"
+    else:
+        score = 0
+        verdict = "REJECTED"
+        verdict_reason = "Score insuffisant"
 
     yield _sse("kyc_result", {
         "verdict":          verdict,
         "score":            score,
         "attacks_blocked":  attacks_blocked,
         "chain_intact":     chain_valid,
+        "liveness":         liveness_status,
+        "human_proven":     human_proven,
         "session_id":       context.session_id,
         "run_id":           context.run_id,
         "timestamp":        timestamp,
         "first_name":       first_name,
         "last_name":        last_name,
         "doc_id":           doc_id,
-        "reason":           f"Score {score}% — Guardian {'bloqué fraude' if blocked else 'sans fraude détectée'}",
+        "reason":           f"Score {score}% — {verdict_reason}",
     })
+    yield from _emit_voice(
+        vc,
+        "commentator",
+        _track(narration, (
+            f"KYC verification complete. Verdict: {verdict}. "
+            f"Score: {score} percent. "
+            f"Human presence: {liveness_status.lower()}. "
+            f"{attacks_blocked} attack blocked by Guardian. "
+            f"The R0 audit chain is {'intact' if chain_valid else 'compromised'}."
+        )),
+        4,
+    )
     time.sleep(0.1)
 
     # ── S7: PDF generation ─────────────────────────────────────────────────
@@ -352,6 +642,8 @@ def kyc_stream_generator(
         attacks_blocked=attacks_blocked, chain_intact=chain_valid,
         session_id=context.session_id, run_id=context.run_id,
         events=serialized_events, timestamp=timestamp,
+        narration=narration,
+        liveness_status=liveness_status, human_proven=human_proven,
     )
     pdf_b64 = base64.b64encode(pdf_bytes).decode()
 

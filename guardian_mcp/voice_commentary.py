@@ -131,6 +131,26 @@ def build_commentary_script(event: "VoiceEvent") -> str:
             "As expected, any modification to the event record is immediately visible. "
             "The original archive remains intact."
         )
+    if kind == "liveness_check":
+        status = d.get("status", "UNKNOWN")
+        gesture = d.get("gesture", "")
+        if status == "PASS":
+            return (
+                "Human presence confirmed. "
+                f"The subject performed the requested hand-movement challenge ({gesture}). "
+                "This is a live interaction, not a replayed recording."
+            )
+        if status == "SIMULATED":
+            return (
+                "Liveness check running in simulated mode. "
+                "No camera input — the demo continues with a simulated human-presence marker."
+            )
+        if status == "SKIPPED":
+            return (
+                "Liveness challenge skipped for this run. "
+                "The human-presence gate was not engaged."
+            )
+        return "Human presence could not be proven. The liveness challenge failed."
     return f"Guardian event: {kind}."
 
 

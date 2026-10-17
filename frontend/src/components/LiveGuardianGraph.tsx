@@ -31,6 +31,8 @@ type Props = {
   events: KycStreamEvent[]
   running: boolean
   decision: string | null
+  /** Render in normal document flow (panel column) instead of the fixed HUD overlay. */
+  embedded?: boolean
 }
 
 const NODE_W = 110
@@ -135,7 +137,7 @@ function buildEdges(nodes: GraphNode[]): GraphEdge[] {
   }))
 }
 
-export function LiveGuardianGraph({ events, running, decision }: Props) {
+export function LiveGuardianGraph({ events, running, decision, embedded = false }: Props) {
   const nodes = buildNodes(events)
   const edges = buildEdges(nodes)
 
@@ -148,11 +150,18 @@ export function LiveGuardianGraph({ events, running, decision }: Props) {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
       // pointer-events-none : le dashboard reste cliquable derrière
-      className="fixed bottom-4 right-4 z-40 pointer-events-none"
-      style={{ width: SVG_W }}
+      className={embedded
+        ? 'relative w-full'
+        : 'fixed bottom-4 right-4 z-40 pointer-events-none'}
+      style={embedded ? { maxWidth: SVG_W } : { width: SVG_W }}
     >
       {/* SVG pur — aucun fond de boîte, aucun header, 100% transparent */}
-      <svg width={SVG_W} height={SVG_H} style={{ overflow: 'visible' }}>
+      <svg
+        viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+        width={embedded ? '100%' : SVG_W}
+        height={embedded ? undefined : SVG_H}
+        style={{ overflow: 'visible', width: embedded ? '100%' : undefined }}
+      >
 
         {/* ── Arêtes ──────────────────────────────────────────────────────── */}
         {edges.map((edge) => {

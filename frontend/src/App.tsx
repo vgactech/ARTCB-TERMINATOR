@@ -2,12 +2,11 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Activity, ShieldCheck, Play, CircleCheck } from 'lucide-react'
 import { KycPanel } from './components/KycPanel'
-import { LiveGuardianGraph } from './components/LiveGuardianGraph'
 import { PitchPage } from './components/PitchPage'
 import { AgentFlow } from './components/AgentFlow'
 import { ForensicPanel } from './components/ForensicPanel'
 import { checkGuardianHealth, listGuardianScenarios, runGuardianScenario } from './api/guardian'
-import type { KycStreamEvent, PolicyScenario, PolicyScenarioResult } from './api/guardian'
+import type { PolicyScenario, PolicyScenarioResult } from './api/guardian'
 import { phaseFromResult, phaseFromAgentIndex } from './forensic/phases'
 import type { ForensicPhase } from './forensic/phases'
 
@@ -38,10 +37,7 @@ function App() {
   const [graphOpen,        setGraphOpen]         = useState(false)
   const [forensicPhase,    setForensicPhase]     = useState<ForensicPhase>('idle')
 
-  // ── KYC / Live graph ──────────────────────────────────────────────────────
-  const [kycEvents,        setKycEvents]         = useState<KycStreamEvent[]>([])
-  const [kycDecision,      setKycDecision]       = useState<string | null>(null)
-  const [kycRunning,       setKycRunning]        = useState(false)
+  // ── KYC ───────────────────────────────────────────────────────────────────
   const [showHudGraph,     setShowHudGraph]      = useState(true)
 
   // ── Active tab ────────────────────────────────────────────────────────────
@@ -85,25 +81,7 @@ function App() {
     }
   }
 
-  // ── KYC SSE feed → live graph ─────────────────────────────────────────────
-  // KycPanel drives the SSE internally; we just need to listen to its events
-  // via a shared ref callback so the HUD graph updates too.
-  // We use a custom event on window to avoid prop-drilling.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent<KycStreamEvent>
-      setKycEvents(prev => [...prev, ce.detail])
-      const t = ce.detail._type
-      if (t === 'guardian_decision') {
-        setKycDecision((ce.detail as Record<string, string>).decision ?? null)
-      }
-      if (t === 'session_opened') { setKycRunning(true);  setKycDecision(null); setKycEvents([ce.detail]) }
-      if (t === 'done')           { setKycRunning(false) }
-    }
-    window.addEventListener('kyc_sse_event', handler)
-    return () => window.removeEventListener('kyc_sse_event', handler)
-  }, [])
-
+  // ── KYC SSE feed is handled inside KycPanel (timeline + embedded graph) ──
   const metrics = [
     { label: 'Backend',          value: engineState === 'online' ? 'Online' : engineState === 'offline' ? 'Offline' : 'Checking…', iconClass: engineState === 'offline' ? 'text-rose-300' : 'text-emerald-300' },
     { label: 'Agents vérifiés',  value: result ? `${result.distinct_agent_count}/4` : 'En attente',   iconClass: 'text-cyan-300' },
@@ -145,13 +123,13 @@ function App() {
         </div>
       </header>
 
-      <div className="relative mx-auto max-w-7xl px-5 py-8 lg:px-8 pb-32">
+      <div className={`relative mx-auto ${tab === 'kyc' ? 'max-w-none' : 'max-w-7xl'} px-5 py-8 lg:px-8 pb-32`}>
 
         {/* ── Tabs ──────────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-1 mb-6 bg-slate-950/50 rounded-xl p-1 border border-white/8 w-fit">
           {([
               { id: 'pitch',     label: '🏦 Pitch Jury',          hidden: false },
-              { id: 'kyc',       label: '🔍 KYC Forensic',        hidden: true  },
+              { id: 'kyc',       label: '🔍 KYC Forensic',        hidden: false },
               { id: 'scenarios', label: '⚡ Scénarios Guardian',  hidden: false },
             ] as const).filter(t => !t.hidden).map(t => (
               <button
@@ -174,7 +152,7 @@ function App() {
               <h1 className="text-2xl font-bold text-white md:text-3xl">Scénario KYC — Know Your Customer</h1>
               <p className="mt-2 text-sm text-slate-400">Traitement d'identité en temps réel · Attaque LLM simulée · Guardian bloque · Rapport PDF signé</p>
             </div>
-            <KycPanel apiBase={API_BASE} />
+            <KycPanel apiBase={API_BASE} showGraph={showHudGraph} />
           </div>
         )}
 
@@ -274,15 +252,6 @@ function App() {
           ARTCB TERMINATOR · Guardian Security Console · Hackathon ESSEC 2026
         </footer>
       </div>
-
-      {/* ── HUD Graph (superposé fixe) ────────────────────────────────────── */}
-      {showHudGraph && (
-        <LiveGuardianGraph
-          events={kycEvents}
-          running={kycRunning}
-          decision={kycDecision}
-        />
-      )}
 
       {/* ── Execution graph modal ─────────────────────────────────────────── */}
       {graphOpen && (

@@ -437,6 +437,50 @@ class GuardianMCPInstrumentation:
 
         return result
 
+    def record_decision(
+        self,
+        *,
+        tool_name: str,
+        decision: GuardianDecision,
+        reason: str,
+        arguments: dict[str, Any] | None = None,
+        duration_ms: float = 0.0,
+        output_summary: str = "",
+    ) -> tuple[MCPToolEvent, str]:
+        """Enregistre un unique événement TERMINAL avec une décision explicite.
+
+        Helper additif pour les signaux de sécurité qui ne sont pas des appels
+        d'outil (ex. vérification de présence humaine / liveness). Aucun
+        exécuteur ni événement INTENT n'est produit ; l'événement est chaîné au
+        dernier hash connu du ledger.
+        """
+        input_hash = _sha256_hex(json.dumps(arguments or {}, sort_keys=True).encode())
+        self._seq += 1
+        prev_hash = self._events[-1][1] if self._events else GENESIS_HASH
+        event = MCPToolEvent(
+            event_id=str(uuid.uuid4()),
+            event_type="guardian.signal",
+            occurred_at=_utc_now(),
+            tool_name=tool_name,
+            agent_id=self.agent_id,
+            session_id=self.session_id,
+            run_id=self.run_id,
+            sequence_no=self._seq,
+            decision=decision,
+            decision_reason=reason,
+            input_hash=input_hash,
+            output_summary=output_summary or reason,
+            duration_ms=round(duration_ms, 3),
+            previous_event_hash=prev_hash,
+            execution_status="NOT_EXECUTED",
+            event_phase=EventPhase.TERMINAL,
+            intent_id="",
+        )
+        event_hash = event.compute_hash()
+        self._events.append((event, event_hash))
+        self._event_sink(event, event_hash)
+        return event, event_hash
+
     # ------------------------------------------------------------------
     # Introspection
     # ------------------------------------------------------------------

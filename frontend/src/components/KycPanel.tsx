@@ -6,16 +6,21 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Shield, AlertTriangle, CheckCircle2,
-  Clock, Download, User,
+  Clock, Download, User, Volume2, VolumeX, Camera,
 } from 'lucide-react'
-import type { KycResult, KycStreamEvent } from '../api/guardian'
+import type {
+  KycResult, KycStreamEvent, VoiceAudioEvent, VoiceScriptEvent, VoiceStatus,
+} from '../api/guardian'
+import { AudioQueue } from '../voice/audioQueue'
+import { LivenessGate, type LivenessOutcome, type LivenessGateHandle } from './LivenessGate'
+import { LiveGuardianGraph } from './LiveGuardianGraph'
 
-type KycPanelProps = { apiBase: string }
+type KycPanelProps = { apiBase: string; showGraph?: boolean }
 
 type TimelineEntry = {
   id: string
   ts: number
-  type: 'session' | 'attack' | 'block' | 'chain' | 'kyc_step' | 'done' | 'error'
+  type: 'session' | 'attack' | 'block' | 'chain' | 'kyc_step' | 'voice' | 'done' | 'error'
   label: string
   detail: string
   status: 'ok' | 'warn' | 'fail' | 'info'
@@ -27,6 +32,7 @@ const TYPE_BG: Record<TimelineEntry['type'], string> = {
   block:    'border-l-emerald-400 bg-emerald-950/40',
   chain:    'border-l-violet-400  bg-violet-950/40',
   kyc_step: 'border-l-sky-400    bg-sky-950/40',
+  voice:    'border-l-fuchsia-400 bg-fuchsia-950/40',
   done:     'border-l-emerald-400 bg-emerald-950/60',
   error:    'border-l-rose-400    bg-rose-950/40',
 }
@@ -37,6 +43,7 @@ const TYPE_TEXT: Record<TimelineEntry['type'], string> = {
   block:    'text-emerald-300',
   chain:    'text-violet-300',
   kyc_step: 'text-sky-300',
+  voice:    'text-fuchsia-300',
   done:     'text-emerald-300',
   error:    'text-rose-300',
 }
@@ -48,7 +55,7 @@ function StatusDot({ status }: { status: TimelineEntry['status'] }) {
   return <Clock size={12} className="text-sky-400 shrink-0 mt-0.5" />
 }
 
-export function KycPanel({ apiBase }: KycPanelProps) {
+export function KycPanel({ apiBase, showGraph = true }: KycPanelProps) {
   const [firstName, setFirstName] = useState('Alice')
   const [lastName,  setLastName]  = useState('Dupont')
   const [docId,     setDocId]     = useState('FR-2024-887634')
@@ -59,8 +66,31 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   const [pdfUrl,    setPdfUrl]    = useState<string | null>(null)
   const [attackCount, setAttackCount] = useState(0)
   const [blockCount,  setBlockCount]  = useState(0)
+  const [voiceOn,     setVoiceOn]     = useState(true)
+  const voiceSpeed = 1.0
+  const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null)
+  const [caption,     setCaption]     = useState('')
+  const [livenessToken, setLivenessToken] = useState<string | null>(null)
+  const [events,      setEvents]      = useState<KycStreamEvent[]>([])
+  const [decision,    setDecision]    = useState<string | null>(null)
+  const [showResults, setShowResults] = useState(false)
+  const [livenessBusy, setLivenessBusy] = useState(false)
   const timelineRef = useRef<HTMLDivElement>(null)
+  const resultsRef  = useRef<HTMLDivElement>(null)
+  const livenessRef = useRef<LivenessGateHandle>(null)
   const esRef       = useRef<EventSource | null>(null)
+  const voiceRef    = useRef<AudioQueue | null>(null)
+
+  useEffect(() => {
+    let active = true
+    fetch(`${apiBase}/api/voice/status`)
+      .then(r => (r.ok ? r.json() as Promise<VoiceStatus> : null))
+      .then(d => { if (active && d) setVoiceAvailable(d.voice_enabled) })
+      .catch(() => { if (active) setVoiceAvailable(false) })
+    return () => { active = false }
+  }, [apiBase])
+
+  useEffect(() => () => voiceRef.current?.stop(), [])
 
   useEffect(() => {
     if (timelineRef.current)
@@ -72,16 +102,41 @@ export function KycPanel({ apiBase }: KycPanelProps) {
   }
 
   function dispatch(type: string, data: KycStreamEvent) {
-    window.dispatchEvent(new CustomEvent('kyc_sse_event', { detail: { ...data, _type: type } }))
+    const enriched = { ...data, _type: type }
+    window.dispatchEvent(new CustomEvent('kyc_sse_event', { detail: enriched }))
+    if (type === 'session_opened') {
+      setEvents([enriched])
+      setDecision(null)
+    } else {
+      setEvents(prev => [...prev, enriched])
+    }
+    if (type === 'guardian_decision') {
+      setDecision((data as Record<string, string>).decision ?? null)
+    }
   }
 
   function reset() {
     esRef.current?.close()
+    voiceRef.current?.stop()
+    voiceRef.current = null
     setTimeline([])
     setResult(null)
     setPdfUrl(null)
     setAttackCount(0)
     setBlockCount(0)
+    setCaption('')
+    setEvents([])
+    setDecision(null)
+  }
+
+  function handleLiveness(outcome: LivenessOutcome) {
+    setLivenessToken(outcome.token)
+    addEntry({
+      type: 'kyc_step',
+      label: `Liveness ${outcome.status}`,
+      detail: outcome.token ? 'jeton de présence prêt pour le KYC' : 'aucun jeton — KYC sans preuve',
+      status: outcome.status === 'PASS' ? 'ok' : outcome.status === 'FAIL' ? 'fail' : 'warn',
+    })
   }
 
   function runKyc() {
@@ -92,9 +147,12 @@ export function KycPanel({ apiBase }: KycPanelProps) {
     }
     reset()
     setRunning(true)
+    setShowResults(true)
+    requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    voiceRef.current = new AudioQueue()
     addEntry({ type: 'kyc_step', label: 'KYC initialisé', detail: `${firstName || '?'} ${lastName || '?'} · ${docId || '?'}`, status: 'info' })
 
-    const url = `${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}`
+    const url = `${apiBase}/api/kyc/stream?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&doc_id=${encodeURIComponent(docId)}&dob=${encodeURIComponent(dob)}&voice=${voiceOn}&speed=${voiceSpeed}${livenessToken ? `&liveness_token=${encodeURIComponent(livenessToken)}` : ''}`
     const es = new EventSource(url)
     esRef.current = es
 
@@ -107,6 +165,17 @@ export function KycPanel({ apiBase }: KycPanelProps) {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('kyc_identity_check', d as KycStreamEvent)
       addEntry({ type: 'kyc_step', label: `Identité ${d.status === 'PASS' ? 'validée ✓' : 'refusée ✗'}`, detail: d.detail ?? '', status: d.status === 'PASS' ? 'ok' : 'fail' })
+    })
+    es.addEventListener('liveness_check', (e: MessageEvent) => {
+      const d = JSON.parse(e.data) as Record<string, unknown>
+      dispatch('liveness_check', d as KycStreamEvent)
+      const ok = d.status === 'PASS' || d.status === 'SIMULATED' || d.status === 'SKIPPED'
+      addEntry({
+        type: 'kyc_step',
+        label: `Présence humaine → ${d.status}`,
+        detail: `${d.human_proven ? 'humain prouvé' : 'non prouvé'} · geste ${d.gesture ?? '—'}`,
+        status: d.status === 'PASS' ? 'ok' : ok ? 'warn' : 'fail',
+      })
     })
     es.addEventListener('attack_generated', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as Record<string, string>
@@ -130,6 +199,15 @@ export function KycPanel({ apiBase }: KycPanelProps) {
       const d = JSON.parse(e.data) as Record<string, string>
       dispatch('chain_verified', d as KycStreamEvent)
       addEntry({ type: 'chain', label: `Chaîne R0 → ${d.verdict}`, detail: `${d.events_replayed} événements vérifiés`, status: d.verdict === 'PASS' ? 'ok' : 'fail' })
+    })
+    es.addEventListener('voice_script', (e: MessageEvent) => {
+      const d = JSON.parse(e.data) as VoiceScriptEvent
+      setCaption(d.text)
+      addEntry({ type: 'voice', label: 'Narration Guardian', detail: d.text, status: 'info' })
+    })
+    es.addEventListener('voice_audio', (e: MessageEvent) => {
+      const d = JSON.parse(e.data) as VoiceAudioEvent
+      voiceRef.current?.enqueue({ sequence: d.sequence, audio_b64: d.audio_b64, mime: d.mime })
     })
     es.addEventListener('kyc_result', (e: MessageEvent) => {
       const d = JSON.parse(e.data) as KycResult
@@ -191,162 +269,265 @@ export function KycPanel({ apiBase }: KycPanelProps) {
         )}
       </div>
 
-      {/* ── Body : 2 colonnes sur large, 1 sur mobile ───────────────────── */}
-      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+      {/* ── Body ─────────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
 
-        {/* ─ Colonne gauche : formulaire ─────────────────────────────────── */}
-        <div style={{ flex: '1 1 320px', padding: 20, display: 'flex', flexDirection: 'column', gap: 16, borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+        {/* ── Section A : première vue — identité | caméra ──────────────── */}
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Champs identité */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {[
-              { label: 'Prénom',          value: firstName, set: setFirstName },
-              { label: 'Nom',             value: lastName,  set: setLastName  },
-              { label: 'N° Document',     value: docId,     set: setDocId     },
-              { label: 'Date naissance',  value: dob,       set: setDob       },
-            ].map(f => (
-              <label key={f.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <span style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</span>
-                <input
-                  type="text"
-                  value={f.value}
-                  onChange={e => f.set(e.target.value)}
-                  disabled={running}
-                  style={{
-                    background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: 8, padding: '7px 10px', fontSize: 13, color: '#fff',
-                    outline: 'none', opacity: running ? 0.5 : 1,
-                  }}
-                />
-              </label>
-            ))}
-          </div>
+          {/* Ligne : identité (gauche) | caméra (droite) — 2 inline */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
 
-          {/* Métriques */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            {[
-              { label: 'Attaques', value: attackCount, color: '#fbbf24' },
-              { label: 'Bloquées', value: blockCount,  color: '#34d399' },
-              { label: 'Taux',     value: `${successRate}%`, color: '#a78bfa' },
-            ].map(m => (
-              <div key={m.label} style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: m.color }}>{m.value}</p>
-                <p style={{ margin: '2px 0 0', fontSize: 10, color: '#94a3b8' }}>{m.label}</p>
-              </div>
-            ))}
-          </div>
+            {/* Champs identité */}
+            <div style={{ flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-          {/* Boutons */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <motion.button
-              whileHover={{ y: -1 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={runKyc}
-              disabled={running}
-              style={{
-                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                background: running ? '#14532d' : '#34d399', color: '#0b1321',
-                border: 'none', borderRadius: 12, padding: '12px 16px',
-                fontSize: 14, fontWeight: 700, cursor: running ? 'wait' : 'pointer',
-                opacity: running ? 0.7 : 1,
-              }}
-            >
-              <Shield size={15} fill="currentColor" />
-              {running ? 'Traitement KYC…' : 'Lancer KYC complet'}
-            </motion.button>
-
-            {pdfUrl && (
-              <a
-                href={pdfUrl}
-                download={`kyc-${firstName}-${lastName}.pdf`}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '12px 14px',
-                  background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
-                  borderRadius: 12, color: '#6ee7b7', fontSize: 13, fontWeight: 600,
-                  textDecoration: 'none',
-                }}
-              >
-                <Download size={14} /> PDF
-              </a>
-            )}
-          </div>
-
-          {/* Résultat KYC */}
-          {result && (
-            <div style={{
-              background: result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.05)' : 'rgba(244,63,94,0.05)',
-              border: `1px solid ${result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'}`,
-              borderRadius: 12, padding: 14,
-            }}>
-              <p style={{ margin: '0 0 8px', fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Rapport KYC</p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 8px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {[
-                  ['Verdict',           result.verdict],
-                  ['Score',             `${result.score}%`],
-                  ['Attaques bloquées', String(result.attacks_blocked)],
-                  ['Chaîne intègre',    result.chain_intact ? 'OUI' : 'NON'],
-                  ['Session',           result.session_id.slice(0, 12) + '…'],
-                  ['Heure',             new Date(result.timestamp).toLocaleTimeString()],
-                ].map(([k, v]) => (
-                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 4, fontSize: 11 }}>
-                    <span style={{ color: '#64748b' }}>{k}</span>
-                    <span style={{ color: '#f1f5f9', fontFamily: 'monospace' }}>{v}</span>
-                  </div>
+                  { label: 'Prénom',          value: firstName, set: setFirstName },
+                  { label: 'Nom',             value: lastName,  set: setLastName  },
+                  { label: 'N° Document',     value: docId,     set: setDocId     },
+                  { label: 'Date naissance',  value: dob,       set: setDob       },
+                ].map(f => (
+                  <label key={f.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</span>
+                    <input
+                      type="text"
+                      value={f.value}
+                      onChange={e => f.set(e.target.value)}
+                      disabled={running}
+                      style={{
+                        background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(255,255,255,0.1)',
+                        borderRadius: 8, padding: '7px 10px', fontSize: 13, color: '#fff',
+                        outline: 'none', opacity: running ? 0.5 : 1, width: '100%',
+                      }}
+                    />
+                  </label>
                 ))}
               </div>
-            </div>
-          )}
-        </div>
 
-        {/* ─ Colonne droite : timeline forensic ────────────────────────── */}
-        <div style={{ flex: '1 1 320px', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Timeline Forensic</p>
-            {running && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#22d3ee' }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22d3ee', display: 'inline-block', animation: 'pulse 1s infinite' }} />
-                LIVE
-              </span>
-            )}
-          </div>
-
-          <div
-            ref={timelineRef}
-            style={{ height: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}
-          >
-            {timeline.length === 0 ? (
-              <p style={{ textAlign: 'center', color: '#334155', fontSize: 12, marginTop: 60 }}>
-                Lance un scénario KYC pour voir les événements en temps réel
-              </p>
-            ) : (
-              timeline.map(entry => (
-                <motion.div
-                  key={entry.id}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className={`border-l-2 ${TYPE_BG[entry.type]}`}
-                  style={{ borderRadius: '0 8px 8px 0', padding: '7px 10px', display: 'flex', alignItems: 'flex-start', gap: 7 }}
+              {/* Voix */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setVoiceOn(v => !v)}
+                  disabled={running}
+                  title={voiceAvailable === false ? 'TTS indisponible — les sous-titres restent affichés' : 'Narration ElevenLabs'}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '10px 12px',
+                    background: voiceOn ? 'rgba(217,70,239,0.12)' : 'rgba(15,23,42,0.6)',
+                    border: `1px solid ${voiceOn ? 'rgba(217,70,239,0.45)' : 'rgba(255,255,255,0.1)'}`,
+                    borderRadius: 10, color: voiceOn ? '#f0abfc' : '#94a3b8',
+                    fontSize: 12, fontWeight: 600, cursor: running ? 'wait' : 'pointer',
+                    opacity: running ? 0.6 : 1,
+                  }}
                 >
-                  <StatusDot status={entry.status} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: 0, fontSize: 11, fontWeight: 600, lineHeight: 1.3 }} className={TYPE_TEXT[entry.type]}>
-                      {entry.label}
-                    </p>
-                    {entry.detail && (
-                      <p style={{ margin: '2px 0 0', fontSize: 10, color: '#64748b', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {entry.detail}
-                      </p>
-                    )}
-                  </div>
-                  <span style={{ fontSize: 9, color: '#334155', fontFamily: 'monospace', flexShrink: 0 }}>
-                    {new Date(entry.ts).toLocaleTimeString()}
-                  </span>
-                </motion.div>
-              ))
-            )}
+                  {voiceOn ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                  Voix {voiceOn ? 'ON' : 'OFF'}
+                </button>
+                {voiceOn && voiceAvailable === false && (
+                  <span style={{ fontSize: 10, color: '#fbbf24' }}>TTS indisponible — sous-titres seuls</span>
+                )}
+              </div>
+
+              {/* Actions défi caméra */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => livenessRef.current?.start()}
+                  disabled={running || livenessBusy}
+                  style={{
+                    flex: '1 1 150px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)',
+                    borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600,
+                    color: '#c7d2fe', cursor: running || livenessBusy ? 'wait' : 'pointer',
+                    opacity: running || livenessBusy ? 0.6 : 1,
+                  }}
+                >
+                  <Camera size={14} /> {livenessBusy ? 'Défi en cours…' : 'Démarrer le défi (caméra)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => livenessRef.current?.demo()}
+                  disabled={running || livenessBusy}
+                  title="Aucune caméra requise — résultat marqué SIMULATED"
+                  style={{
+                    flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6,
+                    background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600,
+                    color: '#94a3b8', cursor: running || livenessBusy ? 'not-allowed' : 'pointer',
+                    opacity: running || livenessBusy ? 0.5 : 1,
+                  }}
+                >
+                  Mode démo sans caméra
+                </button>
+              </div>
+
+              {/* Lancer KYC */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <motion.button
+                  whileHover={{ y: -1 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={runKyc}
+                  disabled={running}
+                  style={{
+                    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    background: running ? '#14532d' : '#34d399', color: '#0b1321',
+                    border: 'none', borderRadius: 12, padding: '12px 16px',
+                    fontSize: 14, fontWeight: 700, cursor: running ? 'wait' : 'pointer',
+                    opacity: running ? 0.7 : 1,
+                  }}
+                >
+                  <Shield size={15} fill="currentColor" />
+                  {running ? 'Traitement KYC…' : 'Lancer KYC complet'}
+                </motion.button>
+
+                {pdfUrl && (
+                  <a
+                    href={pdfUrl}
+                    download={`kyc-${firstName}-${lastName}.pdf`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '12px 14px',
+                      background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
+                      borderRadius: 12, color: '#6ee7b7', fontSize: 13, fontWeight: 600,
+                      textDecoration: 'none',
+                    }}
+                  >
+                    <Download size={14} /> PDF
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* Caméra : preuve de présence humaine — à droite */}
+            <div style={{ flex: '1 1 420px', minWidth: 0 }}>
+              <LivenessGate
+                ref={livenessRef}
+                apiBase={apiBase}
+                disabled={running}
+                onVerified={handleLiveness}
+                showControls={false}
+                onBusyChange={setLivenessBusy}
+              />
+            </div>
           </div>
         </div>
+
+        {/* ── Section B : résultats (révélés au clic) ───────────────────── */}
+        {showResults && (
+          <div
+            ref={resultsRef}
+            style={{ padding: 20, paddingTop: 0, display: 'flex', flexDirection: 'column', gap: 16, borderTop: '1px solid rgba(255,255,255,0.06)' }}
+          >
+
+            {/* Métriques */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+              {[
+                { label: 'Attaques', value: attackCount, color: '#fbbf24' },
+                { label: 'Bloquées', value: blockCount,  color: '#34d399' },
+                { label: 'Taux',     value: `${successRate}%`, color: '#a78bfa' },
+              ].map(m => (
+                <div key={m.label} style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+                  <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: m.color }}>{m.value}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 10, color: '#94a3b8' }}>{m.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Résultat KYC */}
+            {result && (
+              <div style={{
+                background: result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.05)' : 'rgba(244,63,94,0.05)',
+                border: `1px solid ${result.verdict === 'APPROVED' ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'}`,
+                borderRadius: 12, padding: 14,
+              }}>
+                <p style={{ margin: '0 0 8px', fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Rapport KYC</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 8px' }}>
+                  {[
+                    ['Verdict',           result.verdict],
+                    ['Score',             `${result.score}%`],
+                    ['Attaques bloquées', String(result.attacks_blocked)],
+                    ['Chaîne intègre',    result.chain_intact ? 'OUI' : 'NON'],
+                    ['Présence humaine',  result.liveness ?? '—'],
+                    ['Session',           result.session_id.slice(0, 12) + '…'],
+                    ['Heure',             new Date(result.timestamp).toLocaleTimeString()],
+                  ].map(([k, v]) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 4, fontSize: 11 }}>
+                      <span style={{ color: '#64748b' }}>{k}</span>
+                      <span style={{ color: '#f1f5f9', fontFamily: 'monospace' }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ─ Timeline forensic ──────────────────────────────────────── */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Timeline Forensic</p>
+                {running && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#22d3ee' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22d3ee', display: 'inline-block', animation: 'pulse 1s infinite' }} />
+                    LIVE
+                  </span>
+                )}
+              </div>
+
+              {caption && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, background: 'rgba(217,70,239,0.08)', border: '1px solid rgba(217,70,239,0.25)', borderRadius: 10, padding: '8px 10px' }}>
+                  <Volume2 size={13} className="text-fuchsia-300 shrink-0 mt-0.5" />
+                  <p style={{ margin: 0, fontSize: 11, color: '#f0abfc', lineHeight: 1.4 }}>{caption}</p>
+                </div>
+              )}
+
+              <div
+                ref={timelineRef}
+                style={{ height: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}
+              >
+                {timeline.length === 0 ? (
+                  <p style={{ textAlign: 'center', color: '#334155', fontSize: 12, marginTop: 60 }}>
+                    Lance un scénario KYC pour voir les événements en temps réel
+                  </p>
+                ) : (
+                  timeline.map(entry => (
+                    <motion.div
+                      key={entry.id}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className={`border-l-2 ${TYPE_BG[entry.type]}`}
+                      style={{ borderRadius: '0 8px 8px 0', padding: '7px 10px', display: 'flex', alignItems: 'flex-start', gap: 7 }}
+                    >
+                      <StatusDot status={entry.status} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: 11, fontWeight: 600, lineHeight: 1.3 }} className={TYPE_TEXT[entry.type]}>
+                          {entry.label}
+                        </p>
+                        {entry.detail && (
+                          <p style={{ margin: '2px 0 0', fontSize: 10, color: '#64748b', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {entry.detail}
+                          </p>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 9, color: '#334155', fontFamily: 'monospace', flexShrink: 0 }}>
+                        {new Date(entry.ts).toLocaleTimeString()}
+                      </span>
+                    </motion.div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Graphe live 4 agents */}
+            {showGraph && (
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 12 }}>
+                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                  Graphe Guardian — 4 agents
+                </p>
+                <LiveGuardianGraph events={events} running={running} decision={decision} embedded />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

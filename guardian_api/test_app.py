@@ -1168,3 +1168,211 @@ def test_screenpipe_context_unreachable_url_falls_back() -> None:
     finally:
         os.environ.pop("SCREENPIPE_API_URL", None)
 
+
+# ─── KYC Stream voice narration (R0xx) ────────────────────────────────────────
+
+
+def _parse_sse(raw: str) -> list[tuple[str, dict]]:
+    """Parse an SSE body into a list of (event_type, data) pairs."""
+    events: list[tuple[str, dict]] = []
+    event_type: str | None = None
+    for line in raw.splitlines():
+        if line.startswith("event:"):
+            event_type = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event_type is not None:
+            events.append((event_type, json.loads(line.split(":", 1)[1].strip())))
+            event_type = None
+    return events
+
+
+def test_kyc_stream_event_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """KYC stream emits its stages in order with 5 commentator captions, no key."""
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+    response = client.get("/api/kyc/stream?voice=true")
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers.get("content-type", "")
+
+    events = _parse_sse(response.text)
+    assert [t for t, _ in events] == [
+        "session_opened",
+        "voice_script",
+        "kyc_identity_check",
+        "liveness_check",
+        "voice_script",
+        "attack_generated",
+        "voice_script",
+        "propagation",
+        "guardian_decision",
+        "voice_script",
+        "chain_verified",
+        "kyc_result",
+        "voice_script",
+        "done",
+    ]
+
+    captions = [d for t, d in events if t == "voice_script"]
+    assert len(captions) == 5
+    for caption in captions:
+        assert caption["text"].strip()
+        assert caption["role"] == "commentator"
+    # No key → captions only, never any audio
+    assert "voice_audio" not in [t for t, _ in events]
+
+
+def test_kyc_stream_voice_false_emits_no_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """voice=false suppresses audio even when an API key is present."""
+    monkeypatch.setenv("VOICE_1_ELEVENLABS_API", "test-key")
+    response = client.get("/api/kyc/stream?voice=false")
+    assert response.status_code == 200
+    types = [t for t, _ in _parse_sse(response.text)]
+    assert "voice_audio" not in types
+    assert "voice_script" in types
+
+
+def test_kyc_stream_voice_audio_and_ordering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a key (TTS mocked), 5 voice_audio events carry base64 mp3.
+
+    Isolation invariant: guardian_decision precedes every voice_audio event.
+    """
+    import base64
+
+    import guardian_mcp.voice_commentary as vc_mod
+
+    monkeypatch.setenv("VOICE_1_ELEVENLABS_API", "test-key")
+    fake_mp3 = b"ID3\x03\x00\x00\x00\x00\x00\x00fake-mp3-bytes"
+
+    def fake_tts(self: object, voice_id: str, text: str) -> bytes:
+        assert text.strip()
+        return fake_mp3
+
+    monkeypatch.setattr(vc_mod.VoiceCommentary, "_tts", fake_tts)
+
+    response = client.get("/api/kyc/stream?voice=true&speed=1.0")
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    types = [t for t, _ in events]
+
+    assert types.count("voice_audio") == 5
+    assert types.count("voice_script") == 5
+    # Isolation invariant: the decision's own narration (sequence 3) is emitted
+    # only AFTER guardian_decision — TTS latency never delays the security event.
+    decision_idx = types.index("guardian_decision")
+    audio_seq = {d["sequence"]: i for i, (t, d) in enumerate(events) if t == "voice_audio"}
+    assert set(audio_seq) == {0, 1, 2, 3, 4}
+    assert decision_idx < audio_seq[3]
+
+    for t, data in events:
+        if t != "voice_audio":
+            continue
+        assert data["mime"] == "audio/mpeg"
+        assert base64.b64decode(data["audio_b64"]) == fake_mp3
+
+
+@pytest.mark.parametrize(("speed_in", "speed_out"), [(9.0, 2.0), (0.1, 0.5), (0.7, 0.7)])
+def test_kyc_stream_speed_clamped(
+    monkeypatch: pytest.MonkeyPatch, speed_in: float, speed_out: float
+) -> None:
+    """speed is clamped to 0.5–2.0 before reaching the generator."""
+    captured: dict = {}
+
+    def fake_generator(**kwargs: object):
+        captured.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(
+        "guardian_api.kyc_stream.kyc_stream_generator", fake_generator
+    )
+    response = client.get(f"/api/kyc/stream?speed={speed_in}")
+    assert response.status_code == 200
+    assert captured["voice_speed"] == speed_out
+
+
+# ─── KYC PDF report validity (dependency-free fallback) ───────────────────────
+
+
+def _assert_valid_pdf(pdf: bytes) -> None:
+    """Structurally validate the dependency-free PDF (no external library)."""
+    import re
+
+    assert pdf.startswith(b"%PDF-1."), "missing PDF header"
+    assert pdf.rstrip().endswith(b"%%EOF"), "missing EOF marker"
+    assert len(pdf) > 800, "PDF suspiciously small"
+
+    # startxref resolves to the xref table.
+    startxref = pdf.rfind(b"startxref")
+    assert startxref != -1, "no startxref"
+    xref_offset = int(pdf[startxref:].split(b"\n")[1])
+    assert pdf[xref_offset:xref_offset + 4] == b"xref", "startxref does not point at xref"
+
+    # Every in-use xref entry points at its "N 0 obj" header.
+    entries = [line for line in pdf[xref_offset:].split(b"\n") if line.endswith(b" n ")]
+    assert len(entries) == 5, f"expected 5 object offsets, got {len(entries)}"
+    for index, entry in enumerate(entries, start=1):
+        offset = int(entry.split()[0])
+        expected = f"{index} 0 obj".encode()
+        assert pdf[offset:offset + len(expected)] == expected
+
+    # /Length matches the real content-stream length.
+    match = re.search(rb"/Length (\d+) >>\nstream\n", pdf)
+    assert match is not None, "no content stream"
+    length = int(match.group(1))
+    body_start = match.end()
+    assert pdf[body_start + length:body_start + length + 9] == b"endstream"
+
+
+def _pdf_text(pdf: bytes) -> str:
+    """Extract the text drawn by the dependency-free PDF writer."""
+    import re
+
+    return "\n".join(
+        m.group(1).decode("latin-1") for m in re.finditer(rb"\((.*)\) Tj", pdf)
+    )
+
+
+def test_kyc_pdf_is_valid_and_populated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streamed report is a valid PDF containing identity, verdict and narration."""
+    import base64
+    import sys
+
+    monkeypatch.setitem(sys.modules, "fpdf", None)  # force the dependency-free path
+    monkeypatch.delenv("VOICE_1_ELEVENLABS_API", raising=False)
+
+    done = next(
+        d for t, d in _parse_sse(client.get("/api/kyc/stream?voice=true").text)
+        if t == "done"
+    )
+    pdf = base64.b64decode(done["pdf_b64"])
+    _assert_valid_pdf(pdf)
+
+    text = _pdf_text(pdf)
+    assert "Alice" in text
+    assert "Dupont" in text
+    assert "FR-2024-000000" in text
+    assert "APPROVED" in text
+    assert "wallet.sign" in text
+    assert "NARRATION GUARDIAN" in text
+    assert "BLOCKED" in text  # narrator described the Guardian block
+
+
+def test_minimal_pdf_renders_with_missing_data() -> None:
+    """Blank fields and an empty event list still produce a valid, readable PDF."""
+    from guardian_api.kyc_stream import _minimal_pdf
+
+    pdf = _minimal_pdf(
+        first_name="", last_name="Demo", doc_id="", dob="",
+        verdict="REJECTED", score=0, attacks_blocked=0, chain_intact=False,
+        session_id="", run_id="", events=[], timestamp="2026-01-01T00:00:00Z",
+        narration=[],
+    )
+    _assert_valid_pdf(pdf)
+
+    text = _pdf_text(pdf)
+    assert "N/A" in text                          # blank fields never leave a gap
+    assert "DEMO - aucun evenement" in text       # demo fallback row
+    assert "REJECTED" in text
+    assert "Demo" in text
+

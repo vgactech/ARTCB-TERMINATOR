@@ -14,6 +14,7 @@ from typing import Any, Generator
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from guardian_mcp.demo_scenario import DemoReport, run_demo_scenario
@@ -21,6 +22,7 @@ from guardian_mcp.agents import OrchestratorAgent, PropagatorAgent
 from guardian_mcp.attacker_agent import AttackerAgent
 from guardian_mcp.defender_agent import DefenderAgent
 from guardian_mcp.instrumentation import GENESIS_HASH
+from guardian_api.liveness import LivenessObservation, liveness_controller
 from guardian_api.scenario_controller import scenario_controller
 
 
@@ -499,8 +501,57 @@ def voice_status() -> dict[str, Any]:
     }
 
 
-# ─── Demo Scenario endpoints (ScenarioController) ────────────────────────────
+# ─── Liveness / hand-movement challenge ──────────────────────────────────────
 
+
+class LivenessObservationBody(BaseModel):
+    """Pixel-free liveness observation reported by the browser."""
+
+    challenge_id: str
+    nonce: str
+    gesture: str
+    hand_frames: int = 0
+    movement_score: float = 0.0
+    directions: list[str] = Field(default_factory=list)
+    pinch_ratio: float | None = None
+    gesture_matched: bool = False
+    duration_ms: int = 0
+    simulated: bool = False
+
+
+@app.get("/api/liveness/status")
+def liveness_status() -> dict[str, Any]:
+    """Report liveness availability, TTL and available gesture challenges."""
+    return liveness_controller.status()
+
+
+@app.post("/api/liveness/challenge")
+def liveness_challenge() -> dict[str, Any]:
+    """Issue a random single-use gesture challenge (nonce)."""
+    return liveness_controller.new_challenge()
+
+
+@app.post("/api/liveness/verify")
+def liveness_verify(body: LivenessObservationBody) -> dict[str, Any]:
+    """Validate a challenge response and record chained Guardian evidence."""
+    observation = LivenessObservation(
+        gesture=body.gesture,
+        hand_frames=body.hand_frames,
+        movement_score=body.movement_score,
+        directions=body.directions,
+        pinch_ratio=body.pinch_ratio,
+        gesture_matched=body.gesture_matched,
+        duration_ms=body.duration_ms,
+    )
+    return liveness_controller.verify(
+        challenge_id=body.challenge_id,
+        nonce=body.nonce,
+        observation=observation,
+        simulated=body.simulated,
+    ).to_dict()
+
+
+# ─── Demo Scenario endpoints (ScenarioController) ────────────────────────────
 
 @app.get("/api/demo/status")
 def demo_status() -> dict[str, Any]:
@@ -679,16 +730,34 @@ def kyc_stream(
     last_name: str = "Dupont",
     doc_id: str = "FR-2024-000000",
     dob: str = "1990-01-01",
+    voice: bool = True,
+    speed: float = 1.0,
+    liveness_token: str | None = Query(default=None),
 ) -> StreamingResponse:
-    """Server-Sent Events — full KYC scenario with PDF generation."""
+    """Server-Sent Events — full KYC scenario with PDF generation.
+
+    Query parameters:
+      voice (bool, default true)  : add ElevenLabs narration. voice_script events
+                                    always carry the caption text; voice_audio
+                                    events (base64 mp3) appear only when
+                                    VOICE_1_ELEVENLABS_API is set. Set voice=false
+                                    for text-only captions with no TTS latency.
+      speed (float, default 1.0)  : voice playback speed, clamped to 0.5–2.0.
+      liveness_token (str)        : challenge_id returned by /api/liveness/verify.
+                                    Enforces the human-presence gate when present.
+    """
     from guardian_api.kyc_stream import kyc_stream_generator  # noqa: PLC0415
 
+    speed_clamped = max(0.5, min(2.0, speed))
     return StreamingResponse(
         kyc_stream_generator(
             first_name=first_name,
             last_name=last_name,
             doc_id=doc_id,
             dob=dob,
+            voice=voice,
+            voice_speed=speed_clamped,
+            liveness_token=liveness_token,
         ),
         media_type="text/event-stream",
         headers={

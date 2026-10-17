@@ -8,6 +8,8 @@ export type KycResult = {
   score: number
   attacks_blocked: number
   chain_intact: boolean
+  liveness?: 'PASS' | 'FAIL' | 'SIMULATED' | 'SKIPPED'
+  human_proven?: boolean
   session_id: string
   run_id: string
   timestamp: string
@@ -15,6 +17,75 @@ export type KycResult = {
   last_name: string
   doc_id: string
   reason: string
+}
+
+export type VoiceScriptEvent = {
+  role: string
+  text: string
+  sequence: number
+}
+
+export type VoiceAudioEvent = {
+  role: string
+  sequence: number
+  audio_b64: string
+  mime: string
+  speed?: number
+}
+
+export type VoiceStatus = {
+  voice_enabled: boolean
+  api_key_configured: boolean
+  voices: Record<string, string>
+}
+
+export type LivenessGesture = {
+  id: string
+  instruction_fr: string
+  instruction_en: string
+  min_frames: number
+}
+
+export type LivenessStatus = {
+  enabled: boolean
+  ttl_seconds: number
+  data_source: string
+  gestures: LivenessGesture[]
+}
+
+export type LivenessChallenge = {
+  challenge_id: string
+  gesture: string
+  nonce: string
+  instruction_fr: string
+  instruction_en: string
+  expires_at: number
+  ttl_seconds: number
+  simulated: boolean
+  data_source: string
+}
+
+export type LivenessObservation = {
+  gesture: string
+  hand_frames: number
+  movement_score: number
+  directions: string[]
+  pinch_ratio: number | null
+  gesture_matched: boolean
+  duration_ms: number
+  simulated?: boolean
+}
+
+export type LivenessVerdict = 'PASS' | 'FAIL' | 'SIMULATED'
+
+export type LivenessResult = {
+  liveness: LivenessVerdict
+  reason: string
+  human_proven: boolean
+  gesture: string
+  evidence_id: string | null
+  guardian_event_id: string | null
+  data_source: string
 }
 
 export type GuardianStep = {
@@ -127,14 +198,23 @@ export type PolicyScenarioResult = {
   }
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? ''
+// Shared API base. Empty string means same-origin (Vite dev proxy / nginx).
+// Set VITE_API_URL to target a backend on another origin, e.g. http://127.0.0.1:8002.
+export const apiBaseUrl = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? ''
+
+/** Prefix a path with the configured API base (works same-origin and cross-origin). */
+export function apiUrl(path: string): string {
+  return `${apiBaseUrl}${path}`
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, init)
+    response = await fetch(apiUrl(path), init)
   } catch {
-    throw new Error('Guardian API is offline. Start the backend on port 8000 and try again.')
+    throw new Error(
+      'Guardian API is offline. Start the backend (./start_guardian.sh, default port 8002) and try again.',
+    )
   }
 
   if (!response.ok) {
@@ -165,4 +245,20 @@ export function listGuardianScenarios() {
 
 export function runGuardianScenario(scenarioId: string) {
   return request<PolicyScenarioResult>(`/api/scenarios/${scenarioId}/run`, { method: 'POST' })
+}
+
+export function fetchLivenessStatus() {
+  return request<LivenessStatus>('/api/liveness/status')
+}
+
+export function createLivenessChallenge() {
+  return request<LivenessChallenge>('/api/liveness/challenge', { method: 'POST' })
+}
+
+export function verifyLiveness(body: LivenessObservation & { challenge_id: string; nonce: string }) {
+  return request<LivenessResult>('/api/liveness/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
