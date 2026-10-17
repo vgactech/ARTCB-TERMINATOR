@@ -1,0 +1,39 @@
+{
+  "report": "R085",
+  "timestamp": "2026-10-17T14:30:00Z",
+  "mode": "DEBUG",
+  "certified_100": false,
+  "unique_human_proven": false,
+  "commit_r084": "5cd85cf",
+  "commit_r083": "88f1029",
+  "push_result": "88f1029..5cd85cf HEAD -> main",
+  "push_status": "SUCCESS",
+  "files_changed": [
+    "frontend/src/App.tsx",
+    "frontend/src/components/KycPanel.tsx",
+    "guardian_api/app.py",
+    "logs/20261017_R084_p1_corrections.json",
+    "rapports/R084_p1_corrections_kyc_pii_onglet_2026-10-17.md"
+  ],
+  "dependabot_alerts": {
+    "confirmed_by_github_push": true,
+    "count": 3,
+    "breakdown": {"high": 1, "moderate": 1, "low": 1},
+    "url": "https://github.com/vgactech/ARTCB-TERMINATOR/security/dependabot",
+    "action": "Accepter les PRs Dependabot automatiques depuis GitHub UI"
+  },
+  "tasks_status": {
+    "C1_kyc_panel_pii_hors_url": "DONE",
+    "C2_post_endpoint_backend": "DONE",
+    "C3_onglet_kyc_visible": "DONE",
+    "C4_openrouter_bob_documented": "DONE",
+    "dependabot_action_required": "PENDING_USER_GITHUB_UI"
+  },
+  "invariants": {
+    "CERTIFIED_100": false,
+    "unique_human_proven": false,
+    "mode_debug": true,
+    "no_wipe": true,
+    "no_sha_invented": true
+  }
+}
